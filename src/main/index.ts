@@ -1,19 +1,22 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { TRAY_ICON_B64 } from './icon'
+import { registry } from './registry'
+import { registerIpc, publishDemo } from './ipc'
 
-// M0 骨架：单实例 + 托盘常驻 + 空面板 + 冒烟自检出口
-// 冒烟模式：npm run smoke → 窗口就绪后自动退出（exit 0 = 通过），供自动化验证
+// M1：服务发布全链路（网关代理 + cloudflared 隧道）
+// 冒烟 --smoke：窗口就绪后自动退出；E2E --publish-demo <port>：自动发布 demo 服务并打印 E2E_URL/E2E_PIN
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 const SMOKE = process.argv.includes('--smoke')
+const demoArg = process.argv.indexOf('--publish-demo')
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 980,
-    height: 660,
+    width: 1020,
+    height: 700,
     show: false,
     title: 'TunnelDock 隧道坞',
     autoHideMenuBar: true,
@@ -21,19 +24,15 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false // preload 需要 require；contextIsolation 已开
+      sandbox: false
     }
   })
 
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
-    if (SMOKE) {
-      // 自动化冒烟：窗口真正显示后 1.5s 退出
-      setTimeout(() => app.exit(0), 1500)
-    }
+    if (SMOKE) setTimeout(() => app.exit(0), 1500)
   })
 
-  // 关闭 = 隐藏到托盘（托盘菜单里才真正退出）
   mainWindow.on('close', (e) => {
     if (!SMOKE && !isQuitting) {
       e.preventDefault()
@@ -66,7 +65,6 @@ function createTray(): void {
   tray.on('double-click', () => (mainWindow ? (mainWindow.show(), mainWindow.focus()) : createWindow()))
 }
 
-// 单实例：第二个实例唤醒已有窗口后退出
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
@@ -78,15 +76,24 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   void app.whenReady().then(() => {
+    registry.init()
+    registerIpc()
     createWindow()
     createTray()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
+    if (demoArg !== -1) {
+      const port = Number(process.argv[demoArg + 1] || 4590)
+      void publishDemo(port)
+    }
   })
 }
 
+app.on('before-quit', () => {
+  isQuitting = true
+})
+
 app.on('window-all-closed', () => {
-  // 托盘常驻：不退出（冒烟模式除外）
-  if (SMOKE) app.quit()
+  if (SMOKE || demoArg !== -1) app.quit()
 })

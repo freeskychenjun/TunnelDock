@@ -4,7 +4,15 @@ import { resolve } from 'path'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()]
+    plugins: [externalizeDepsPlugin()],
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve(__dirname, 'src/main/index.ts'),
+          gateway: resolve(__dirname, 'src/gateway/proxy.cjs')
+        }
+      }
+    }
   },
   preload: {
     plugins: [externalizeDepsPlugin()]
