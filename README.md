@@ -5,6 +5,21 @@ Windows 桌面应用（Electron + TypeScript + Vue 3），闭源。
 
 方案文档：[docs/开发方案.md](docs/开发方案.md)
 
+## 排障
+
+**手机提示「找不到服务器」（DNS 层失败，非 502/525）**
+
+国内运营商 DNS 对 `*.trycloudflare.com` 的随机子域名**抽风式不可解析**（同名域名 1.1.1.1 正常、
+运营商 DNS 失败，实测复现）。解法按推荐顺序：
+
+1. 手机浏览器开 DoH：Firefox「设置 → 隐私与安全 → DNS over HTTPS」开启即可（走 Cloudflare）；
+   或 Android 系统级「私人 DNS」填 `1dot1dot1dot1.cloudflare-dns.com`；
+2. 在 TunnelDock 里「停止→启动」换一个随机域名碰运气（是否可解析按域名抽签）；
+3. 根治：命名隧道 + 自有域名（M3，国内 DNS 对自有域名通常正常）。
+
+**502 Bad Gateway**：多为目标服务地址填错（带 `http://` 已能自动清洗）或目标服务没启动；
+在电脑浏览器直接访问 `http://目标地址:端口` 排查服务本身。
+
 ## 开发
 
 ```powershell
