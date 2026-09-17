@@ -130,7 +130,13 @@ function proxyReq(req, res) {
     'x-forwarded-host': req.headers['host'] || ''
   })
   headers['host'] = UPSTREAM_HOST // 通用服务按目标地址重写 Host
+  // 剥掉浏览器来源头：隧道域名与重写后的 Host 不同源，
+  // 像 pi-web / DSH 这类带 Host/Origin 围栏的服务会把 /api 全部 403。
+  // 信任边界由本代理的 PIN 承担，上游不再需要这些头做 CSRF 判断。
   delete headers['authorization']
+  delete headers['origin']
+  delete headers['referer']
+  delete headers['sec-fetch-site']
   const options = { host: TARGET_HOST, port: TARGET_PORT, method: req.method, path: req.url, headers }
   const proxy = http.request(options, (pres) => {
     res.writeHead(pres.statusCode, pres.headers)
@@ -214,6 +220,8 @@ server.on('upgrade', (req, socket, head) => {
       requestHead += `host: ${UPSTREAM_HOST}\r\n`
       continue
     }
+    // 与普通请求一致：上游不接收浏览器来源头（见 proxyReq 注释）
+    if (name === 'origin' || name === 'referer' || name === 'sec-fetch-site') continue
     if (Array.isArray(v)) v.forEach((x) => (requestHead += `${k}: ${x}\r\n`))
     else requestHead += `${k}: ${v}\r\n`
   }
