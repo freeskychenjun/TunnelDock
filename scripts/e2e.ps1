@@ -8,6 +8,22 @@ $env:NODE_OPTIONS = ''
 $proj = Split-Path -Parent $PSScriptRoot
 Set-Location $proj
 
+# 任何失败路径都要清干净（否则残留 electron/cloudflared 会卡住后续运行）
+function Invoke-Cleanup {
+  Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*tunneldock*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  Get-NetTCPConnection -State Listen -LocalPort 4590 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+}
+trap { Invoke-Cleanup; "❌ E2E 失败：$($_.Exception.Message)"; exit 1 }
+
+"=== 0) 清残留（上次运行的进程 / 数据） ==="
+Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*tunneldock*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+foreach ($ud in @("$env:APPDATA\TunnelDock", "$env:APPDATA\tunneldock")) {
+  if (Test-Path "$ud\data\services.json") { Remove-Item "$ud\data\services.json" -Force }
+}
+"已清理"
+
 "=== 1) 构建 ==="
 # PS5.1 坑：EAP=Stop 时对原生命令用 2>&1 会把 stderr 警告升级成终止错误，这里只看退出码
 $ErrorActionPreference = 'Continue'
@@ -25,22 +41,22 @@ if ($demo.HasExited) { throw "demo 服务启动失败：$(Get-Content "$env:TEMP
 "=== 3) 起 TunnelDock 并自动发布 ==="
 $appLog = "$env:TEMP\td-e2e.log"
 Remove-Item $appLog -ErrorAction SilentlyContinue
-$app = Start-Process (Join-Path $proj 'node_modules\electron\dist\electron.exe') -ArgumentList 'out\main\index.js', '--publish-demo', '4590' -PassThru -WindowStyle Hidden -RedirectStandardOutput $appLog -RedirectStandardError "$env:TEMP\td-e2e.err.log"
+$app = Start-Process (Join-Path $proj 'node_modules\electron\dist\electron.exe') -ArgumentList 'out\main\index.js', '--publish-demo', '4590', '--demo-pin', 'e2etest' -PassThru -WindowStyle Hidden -RedirectStandardOutput $appLog -RedirectStandardError "$env:TEMP\td-e2e.err.log"
 
 $url = $null; $pin = $null
 for ($i = 0; $i -lt 60; $i++) {
   Start-Sleep -Seconds 2
   if (Test-Path $appLog) {
     $t = Get-Content $appLog -Raw -ErrorAction SilentlyContinue
-    $u = [regex]::Match($t, 'E2E_URL=(https://[a-z0-9-]+\.trycloudflare\.com)').Groups[1].Value
-    $p = [regex]::Match($t, 'E2E_PIN=(\d{8})').Groups[1].Value
+    $u = [regex]::Match($t, 'E2E_URL=(https://[a-z0-9]+(-[a-z0-9]+){2,}\.trycloudflare\.com)').Groups[1].Value
+    $p = [regex]::Match($t, 'E2E_PIN=(\S+)').Groups[1].Value
     if ($u) { $url = $u; $pin = $p; break }
     if ($t -match 'E2E_FAIL=') { throw "发布失败：$t" }
   }
   if ($app.HasExited) { throw "应用提前退出：$(Get-Content "$env:TEMP\td-e2e.err.log" -Raw)" }
 }
 if (-not $url) { throw '90 秒内未拿到公网地址' }
-"公网地址: $url  PIN: $pin"
+"公网地址: $url  口令: $pin"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $cc = New-Object System.Net.CookieContainer
@@ -57,7 +73,7 @@ function Send($method, $uri, $body) {
 $a = Send 'GET' $url $null
 "[1] 未认证: HTTP $($a.Code) 登录页=" + ($a.Body -match 'TunnelDock 保护的服务')
 $b = Send 'POST' "$url/_td_auth" "pin=$pin&next=%2F"
-"[2] PIN 登录: HTTP $($b.Code) → $($b.Location)"
+"[2] 口令登录（自定义口令）: HTTP $($b.Code)"
 $c = Send 'GET' $url $null
 "[3] 带会话取页面: HTTP $($c.Code) 是 demo 页=" + ($c.Body -match 'TunnelDock E2E Demo')
 
@@ -84,17 +100,34 @@ for ($i = 1; $i -le 6; $i++) {
   $bd2 = [Text.Encoding]::UTF8.GetBytes("pin=00000000&next=%2F"); $r.ContentLength = $bd2.Length
   $s2 = $r.GetRequestStream(); $s2.Write($bd2, 0, $bd2.Length); $s2.Close()
   try { $resp2 = $r.GetResponse() } catch [System.Net.WebException] { $resp2 = $_.Exception.Response }
-  $last = [int]$resp2.StatusCode; $resp2.Close()
+  if ($resp2) { $last = [int]$resp2.StatusCode; $resp2.Close() } else { $last = -1 }
 }
-"[5] 第 6 次错误 PIN: HTTP $last （429 = 限速生效）"
+"[5] 第 6 次错误口令: HTTP $last （429 = 限速生效）"
 
-"=== 6) 清理 ==="
+"=== 6) 断线自动重连（杀掉 cloudflared） ==="
+Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force
+$url2 = $null
+for ($i = 0; $i -lt 75; $i++) {
+  Start-Sleep -Seconds 2
+  $t2 = Get-Content $appLog -Raw -ErrorAction SilentlyContinue
+  $u2 = [regex]::Match($t2, 'E2E_URL2=(https://[a-z0-9]+(-[a-z0-9]+){2,}\.trycloudflare\.com)').Groups[1].Value
+  if ($u2 -and $u2 -ne $url) { $url2 = $u2; break }
+}
+if (-not $url2) { throw '杀掉 cloudflared 后 150 秒内未自动重连' }
+"[6] 自动重连成功，新地址: $url2"
+$r3 = [System.Net.HttpWebRequest]::Create($url2); $r3.AllowAutoRedirect = $false; $r3.Timeout = 20000
+try { $p3 = $r3.GetResponse() } catch [System.Net.WebException] { $p3 = $_.Exception.Response }
+$code3 = [int]$p3.StatusCode; $p3.Close()
+"[6] 新地址未认证: HTTP $code3 （200 = 登录墙在线）"
+$reconnectOk = ($code3 -eq 200)
+
+"=== 7) 清理 ==="
 Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 Stop-Process -Id $demo.Id -Force -ErrorAction SilentlyContinue
-Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Invoke-Cleanup
 
-$pass = ($a.Code -eq 200) -and ($b.Code -eq 303) -and ($c.Code -eq 200) -and ($wsLine -match '101') -and ($last -eq 429)
+$pass = ($a.Code -eq 200) -and ($b.Code -eq 303) -and ($c.Code -eq 200) -and ($wsLine -match '101') -and ($last -eq 429) -and $reconnectOk
 ""
 if ($pass) { "✅ E2E 全部通过" } else { "❌ 有未通过项，见上" }
 exit $(if ($pass) { 0 } else { 1 })

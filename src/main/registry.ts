@@ -10,6 +10,7 @@ export interface ServiceConfig {
   targetHost: string
   targetPort: number
   pin: string
+  autoStart: boolean // TunnelDock 启动时是否自动恢复发布
   createdAt: number
 }
 
@@ -41,13 +42,14 @@ class Registry {
     return this.cache.find((s) => s.id === id)
   }
 
-  add(name: string, targetHost: string, targetPort: number): ServiceConfig {
+  add(name: string, targetHost: string, targetPort: number, pin?: string): ServiceConfig {
     const svc: ServiceConfig = {
       id: randomUUID().slice(0, 8),
       name,
       targetHost,
       targetPort,
-      pin: genPin(),
+      pin: pin || genPin(),
+      autoStart: true, // 默认：随 TunnelDock 启动自动恢复
       createdAt: Date.now()
     }
     this.cache.push(svc)

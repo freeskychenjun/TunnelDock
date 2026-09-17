@@ -2,15 +2,16 @@ import { app, BrowserWindow, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { TRAY_ICON_B64 } from './icon'
 import { registry } from './registry'
-import { registerIpc, publishDemo } from './ipc'
+import { registerIpc, publishDemo, autoRestore } from './ipc'
 
-// M1：服务发布全链路（网关代理 + cloudflared 隧道）
-// 冒烟 --smoke：窗口就绪后自动退出；E2E --publish-demo <port>：自动发布 demo 服务并打印 E2E_URL/E2E_PIN
+// M2：断线重连、自启恢复、--hidden 静默启动、渲染进程崩溃自愈
+// 冒烟 --smoke：窗口就绪后自动退出；E2E --publish-demo <port> [--demo-pin xxx]：自动发布并打印 E2E_URL/E2E_PIN
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 const SMOKE = process.argv.includes('--smoke')
+const HIDDEN = process.argv.includes('--hidden')
 const demoArg = process.argv.indexOf('--publish-demo')
 
 function createWindow(): void {
@@ -29,8 +30,14 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
+    if (!HIDDEN) mainWindow?.show()
     if (SMOKE) setTimeout(() => app.exit(0), 1500)
+  })
+
+  // 渲染进程崩溃自愈：重建窗口
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    console.log(`[warn] 渲染进程异常退出（${details.reason}），正在重载`)
+    mainWindow?.reload()
   })
 
   mainWindow.on('close', (e) => {
@@ -85,7 +92,11 @@ if (!app.requestSingleInstanceLock()) {
     })
     if (demoArg !== -1) {
       const port = Number(process.argv[demoArg + 1] || 4590)
-      void publishDemo(port)
+      const pinIdx = process.argv.indexOf('--demo-pin')
+      const customPin = pinIdx !== -1 ? process.argv[pinIdx + 1] : undefined
+      void publishDemo(port, customPin)
+    } else {
+      autoRestore() // 正常启动：恢复所有 autoStart 的发布（E2E 模式跳过，走 publishDemo）
     }
   })
 }

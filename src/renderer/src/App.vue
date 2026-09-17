@@ -6,17 +6,19 @@ const services = ref<ServiceConfig[]>([])
 const states = ref<Record<string, ServiceState>>({})
 const showCreate = ref(false)
 const qr = ref<{ url: string; name: string; pin: string; dataUrl: string } | null>(null)
-const form = ref({ name: '', host: '127.0.0.1', port: '' })
+const pinEdit = ref<{ id: string; name: string; value: string } | null>(null)
+const form = ref({ name: '', host: '127.0.0.1', port: '', pin: '' })
 const busy = ref(false)
 const toast = ref('')
+const appAutostart = ref(false)
 
 function showToast(msg: string): void {
   toast.value = msg
-  setTimeout(() => (toast.value = ''), 2000)
+  setTimeout(() => (toast.value = ''), 2200)
 }
 
 function stateOf(id: string): ServiceState {
-  return states.value[id] || { id, status: 'idle', url: null, error: null }
+  return states.value[id] || { id, status: 'idle', url: null, error: null, attempt: 0 }
 }
 
 async function refresh(): Promise<void> {
@@ -27,8 +29,9 @@ async function refresh(): Promise<void> {
   states.value = m
 }
 
-onMounted(() => {
+onMounted(async () => {
   void refresh()
+  appAutostart.value = await window.tunneldock.getAppAutostart()
   window.tunneldock.onEvent((st) => {
     const m: Record<string, ServiceState> = {}
     for (const s of st) m[s.id] = s
@@ -42,13 +45,25 @@ async function createService(): Promise<void> {
     showToast('名称 / 地址 / 端口 都要填对')
     return
   }
+  const pin = form.value.pin.trim()
+  if (pin && !/^[0-9A-Za-z@#$%^&*-]{6,32}$/.test(pin)) {
+    showToast('自定义口令需 6-32 位（字母/数字/@#$%^&*-）')
+    return
+  }
   busy.value = true
   try {
-    await window.tunneldock.create({ name: form.value.name.trim(), targetHost: form.value.host.trim(), targetPort: port })
+    await window.tunneldock.create({
+      name: form.value.name.trim(),
+      targetHost: form.value.host.trim(),
+      targetPort: port,
+      pin: pin || undefined
+    })
     showCreate.value = false
-    form.value = { name: '', host: '127.0.0.1', port: '' }
+    form.value = { name: '', host: '127.0.0.1', port: '', pin: '' }
     await refresh()
     showToast('已创建，点「启动」发布到公网')
+  } catch (e) {
+    showToast((e as Error).message)
   } finally {
     busy.value = false
   }
@@ -78,6 +93,28 @@ async function resetPin(id: string): Promise<void> {
   showToast('PIN 已重置（运行中的发布已停止，需重新启动）')
 }
 
+async function savePin(): Promise<void> {
+  if (!pinEdit.value) return
+  try {
+    await window.tunneldock.setPin(pinEdit.value.id, pinEdit.value.value.trim())
+    showToast('口令已改（运行中的发布已停止，需重新启动）')
+    pinEdit.value = null
+    await refresh()
+  } catch (e) {
+    showToast((e as Error).message)
+  }
+}
+
+async function toggleAutoStart(svc: ServiceConfig): Promise<void> {
+  await window.tunneldock.setAutoStart(svc.id, !svc.autoStart)
+  await refresh()
+}
+
+async function toggleAppAutostart(): Promise<void> {
+  appAutostart.value = await window.tunneldock.setAppAutostart(!appAutostart.value)
+  showToast(appAutostart.value ? 'TunnelDock 将随开机静默启动并恢复发布' : '已关闭开机自启')
+}
+
 async function showQr(svc: ServiceConfig): Promise<void> {
   const st = stateOf(svc.id)
   if (!st.url) return
@@ -104,12 +141,16 @@ const STATUS_TEXT: Record<string, string> = {
     <header class="topbar">
       <span class="logo">⚓</span>
       <span class="title">TunnelDock <small>隧道坞</small></span>
-      <span class="ver">v0.1.0 · M1</span>
+      <span class="ver">v0.2.0 · M2</span>
     </header>
 
     <main class="body">
       <div class="toolbar">
-        <span class="hint">把内网 Web 服务安全发布到公网 · 每个发布独立 PIN 保护</span>
+        <label class="switcher">
+          <input type="checkbox" :checked="appAutostart" @change="toggleAppAutostart" />
+          开机自启并恢复发布
+        </label>
+        <span class="hint">每个发布独立 PIN 保护 · 断线自动重连</span>
         <button class="primary" @click="showCreate = true">＋ 新建发布</button>
       </div>
 
@@ -130,14 +171,20 @@ const STATUS_TEXT: Record<string, string> = {
           <button class="mini" @click="copy(stateOf(svc.id).url!, '地址')">复制</button>
           <button class="mini" @click="showQr(svc)">二维码</button>
         </div>
-        <div v-if="stateOf(svc.id).status === 'starting'" class="row2 muted">正在建立隧道（约 10-30 秒）…</div>
-        <div v-if="stateOf(svc.id).error" class="row2 err">{{ stateOf(svc.id).error }}</div>
+        <div v-if="stateOf(svc.id).status === 'starting'" class="row2 muted">
+          {{ stateOf(svc.id).attempt > 0 ? `重连中（第 ${stateOf(svc.id).attempt} 次）` : '正在建立隧道（约 10-30 秒）' }}{{ stateOf(svc.id).error ? ' · ' + stateOf(svc.id).error : '' }}…
+        </div>
+        <div v-if="stateOf(svc.id).status === 'error'" class="row2 err">{{ stateOf(svc.id).error }}</div>
 
         <div class="row3">
-          <span class="pin">PIN <code>{{ svc.pin }}</code></span>
-          <button class="mini ghost" @click="copy(svc.pin, 'PIN')">复制 PIN</button>
-          <button class="mini ghost" @click="resetPin(svc.id)">重置 PIN</button>
+          <span class="pin">口令 <code>{{ svc.pin }}</code></span>
+          <button class="mini ghost" @click="copy(svc.pin, '口令')">复制</button>
+          <button class="mini ghost" @click="pinEdit = { id: svc.id, name: svc.name, value: '' }">改口令</button>
+          <button class="mini ghost" @click="resetPin(svc.id)">重置8位PIN</button>
           <span class="spacer" />
+          <label class="switcher small" title="TunnelDock 启动时自动恢复此发布">
+            <input type="checkbox" :checked="svc.autoStart" @change="toggleAutoStart(svc)" /> 自启
+          </label>
           <button v-if="['idle', 'error'].includes(stateOf(svc.id).status)" class="mini run" @click="start(svc.id)">启动</button>
           <button v-else-if="stateOf(svc.id).status === 'ready'" class="mini stop" @click="stop(svc.id)">停止</button>
           <button class="mini danger" @click="removeSvc(svc.id)">删除</button>
@@ -155,9 +202,24 @@ const STATUS_TEXT: Record<string, string> = {
         <input v-model="form.host" placeholder="127.0.0.1" />
         <label>目标端口</label>
         <input v-model="form.port" placeholder="如 5173" inputmode="numeric" />
+        <label>访问口令（留空 = 自动生成 8 位 PIN）</label>
+        <input v-model="form.pin" placeholder="至少 6 位" />
         <div class="actions">
           <button class="mini" @click="showCreate = false">取消</button>
           <button class="primary" :disabled="busy" @click="createService">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 改口令 -->
+    <div v-if="pinEdit" class="mask" @click.self="pinEdit = null">
+      <div class="modal">
+        <h3>修改口令 · {{ pinEdit.name }}</h3>
+        <label>新口令（6-32 位，字母/数字/@#$%^&*-）</label>
+        <input v-model="pinEdit.value" placeholder="新口令" />
+        <div class="actions">
+          <button class="mini" @click="pinEdit = null">取消</button>
+          <button class="primary" @click="savePin">保存</button>
         </div>
       </div>
     </div>
@@ -168,7 +230,7 @@ const STATUS_TEXT: Record<string, string> = {
         <h3>{{ qr.name }}</h3>
         <img :src="qr.dataUrl" alt="二维码" />
         <p class="qrurl">{{ qr.url }}</p>
-        <p class="qrpin">扫码后输入 PIN：<code>{{ qr.pin }}</code></p>
+        <p class="qrpin">扫码后输入口令：<code>{{ qr.pin }}</code></p>
         <div class="actions">
           <button class="mini" @click="copy(qr.url, '地址')">复制地址</button>
           <button class="primary" @click="qr = null">完成</button>
@@ -190,8 +252,11 @@ body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; backgr
 .title small { color: #94a3b8; font-weight: 400; margin-left: 6px; }
 .ver { margin-left: auto; color: #64748b; font-size: 12px; }
 .body { flex: 1; overflow: auto; padding: 20px; }
-.toolbar { display: flex; align-items: center; margin-bottom: 16px; }
+.toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .hint { color: #64748b; font-size: 13px; margin-right: auto; }
+.switcher { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #cbd5e1; cursor: pointer; }
+.switcher.small { color: #94a3b8; font-size: 12px; }
+.switcher input { accent-color: #3b82f6; }
 button { font-family: inherit; cursor: pointer; border-radius: 8px; }
 .primary { background: #3b82f6; color: #fff; border: none; padding: 9px 18px; font-size: 14px; font-weight: 600; }
 .primary:hover { background: #2f6fe0; } .primary:disabled { opacity: .5; }
@@ -212,7 +277,7 @@ button { font-family: inherit; cursor: pointer; border-radius: 8px; }
 .url { font-size: 13px; color: #7dd3fc; word-break: break-all; }
 .muted { color: #94a3b8; font-size: 13px; }
 .err { color: #fca5a5; font-size: 13px; }
-.row3 { margin-top: 12px; display: flex; align-items: center; gap: 8px; }
+.row3 { margin-top: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pin { color: #94a3b8; font-size: 13px; }
 .pin code { color: #fbbf24; letter-spacing: 2px; font-size: 14px; }
 .spacer { flex: 1; }
@@ -234,5 +299,5 @@ button { font-family: inherit; cursor: pointer; border-radius: 8px; }
 .qrurl { font-size: 12px; color: #7dd3fc; margin-top: 10px; word-break: break-all; }
 .qrpin { color: #94a3b8; font-size: 13px; margin-top: 4px; }
 .qrpin code { color: #fbbf24; letter-spacing: 2px; }
-.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #334155; color: #e2e8f0; padding: 10px 20px; border-radius: 10px; font-size: 13px; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #334155; color: #e2e8f0; padding: 10px 20px; border-radius: 10px; font-size: 13px; box-shadow:  0 6px 20px rgba(0,0,0,.4); }
 </style>
