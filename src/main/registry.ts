@@ -18,6 +18,18 @@ export function genPin(): string {
   return String(randomInt(10000000, 100000000)) // 8 位数字
 }
 
+// 目标地址归一化：容错用户输入（剥协议头/路径/空白，转小写）
+// "http://172.14.60.197/" → "172.14.60.197"
+export function normalizeHost(input: string): string {
+  let s = String(input || '').trim()
+  s = s.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '') // http:// https:// 等
+  s = s.replace(/\/.*$/, '') // 路径
+  s = s.replace(/:\d+$/, '') // 端口（端口应填在端口框；这里避免拼进 host）
+  return s.toLowerCase()
+}
+
+const HOST_RE = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/ // 主机名或 IPv4
+
 class Registry {
   private file = ''
   private cache: ServiceConfig[] = []
@@ -27,11 +39,24 @@ class Registry {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     this.file = join(dir, 'services.json')
     try {
-      this.cache = JSON.parse(readFileSync(this.file, 'utf8'))
-      if (!Array.isArray(this.cache)) this.cache = []
+      const raw = readFileSync(this.file, 'utf8').replace(/^\uFEFF/, '') // 容错 BOM
+      const parsed: unknown = JSON.parse(raw)
+      // 容错：单对象（外部工具改写常见）也当作一条记录
+      this.cache = Array.isArray(parsed) ? (parsed as ServiceConfig[]) : [parsed as ServiceConfig]
+      this.cache = this.cache.filter((s) => s && typeof s.id === 'string')
     } catch {
       this.cache = []
     }
+    // 自愈：历史数据里的 host 可能带协议头/路径（用户整段粘贴 URL 所致）
+    let dirty = false
+    for (const s of this.cache) {
+      const fixed = normalizeHost(s.targetHost)
+      if (fixed && fixed !== s.targetHost && HOST_RE.test(fixed)) {
+        s.targetHost = fixed
+        dirty = true
+      }
+    }
+    if (dirty) this.save()
   }
 
   list(): ServiceConfig[] {
@@ -42,7 +67,11 @@ class Registry {
     return this.cache.find((s) => s.id === id)
   }
 
-  add(name: string, targetHost: string, targetPort: number, pin?: string): ServiceConfig {
+  add(name: string, targetHostRaw: string, targetPort: number, pin?: string): ServiceConfig {
+    const targetHost = normalizeHost(targetHostRaw)
+    if (!targetHost || !HOST_RE.test(targetHost)) {
+      throw new Error('目标地址格式不对：填主机名或 IP（如 127.0.0.1），不要带 http:// 和路径')
+    }
     const svc: ServiceConfig = {
       id: randomUUID().slice(0, 8),
       name,
