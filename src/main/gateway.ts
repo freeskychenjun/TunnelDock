@@ -1,6 +1,14 @@
 // 网关代理的 utilityProcess 封装：fork、等 listening 上报端口、停止
-import { utilityProcess, UtilityProcess } from 'electron'
+import { utilityProcess, UtilityProcess, app } from 'electron'
 import { join } from 'path'
+
+// gateway.js 需要磁盘上的真实文件：打包后它在 app.asar.unpacked 里（electron-builder asarUnpack）
+function gatewayModule(): string {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, 'app.asar.unpacked', 'out', 'main', 'gateway.js')
+  }
+  return join(__dirname, 'gateway.js')
+}
 
 export interface GatewayHandle {
   process: UtilityProcess
@@ -17,7 +25,7 @@ export interface GatewayConfig {
 
 export function startGateway(cfg: GatewayConfig, onLog?: (level: string, msg: string) => void): Promise<GatewayHandle> {
   return new Promise<GatewayHandle>((resolve, reject) => {
-    const proc = utilityProcess.fork(join(__dirname, 'gateway.js'), [JSON.stringify(cfg)], {
+    const proc = utilityProcess.fork(gatewayModule(), [JSON.stringify(cfg)], {
       serviceName: `td-gateway-${cfg.serviceName}`
     })
     const timer = setTimeout(() => {

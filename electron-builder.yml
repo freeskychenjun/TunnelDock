@@ -1,0 +1,25 @@
+appId: com.agui.tunneldock
+productName: TunnelDock
+copyright: Copyright (c) Agui
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+  - package.json
+# gateway.js 是 utilityProcess fork 的入口，必须真实存在于磁盘（解出 asar）
+asarUnpack:
+  - out/main/gateway.js
+extraResources:
+  # cloudflared 随安装包内置（prep 脚本从本机复制，不入 git）
+  - from: resources/cloudflared.exe
+    to: cloudflared.exe
+win:
+  target: nsis
+  icon: build/icon.ico
+nsis:
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: true
+  shortcutName: TunnelDock

@@ -1,6 +1,8 @@
 // cloudflared 生命周期：定位二进制 → 起快隧道 → 解析公网 URL → 探活 → 可 kill
 import { spawn, ChildProcess, execFileSync } from 'child_process'
 import { existsSync } from 'fs'
+import { join } from 'path'
+import { app } from 'electron'
 
 export interface TunnelHandle {
   url: string
@@ -9,6 +11,7 @@ export interface TunnelHandle {
 
 const CANDIDATES = [
   process.env.TUNNELDOCK_CLOUDFLARED, // 用户/开发环境指定
+  app.isPackaged ? join(process.resourcesPath, 'cloudflared.exe') : null, // 安装包内置
   'C:\\Users\\Administrator\\.cloudflared\\cloudflared.exe', // 本机现成二进制（开发期）
   'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe'
 ].filter(Boolean) as string[]

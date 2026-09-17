@@ -1,7 +1,7 @@
 {
   "name": "tunneldock",
   "productName": "TunnelDock",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "隧道坞 TunnelDock — 把内网 Web 服务一键安全发布到公网",
   "main": "out/main/index.js",
   "author": "Agui",
@@ -11,7 +11,10 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "smoke": "electron-vite build && electron out/main/index.js --smoke",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prep": "powershell -ExecutionPolicy Bypass -File scripts/prep-cloudflared.ps1",
+    "dist": "electron-vite build && electron-builder --win nsis",
+    "e2e": "powershell -ExecutionPolicy Bypass -File scripts/e2e.ps1"
   },
   "dependencies": {
     "qrcode": "^1.5.4",
@@ -22,6 +25,7 @@
     "@types/qrcode": "^1.5.5",
     "@vitejs/plugin-vue": "^5.2.1",
     "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
