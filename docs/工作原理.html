@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TunnelDock 工作原理 · 航道与灯塔</title>
+<style>
+:root{
+  --navy-0:#0a1120; --navy-1:#0f172a; --navy-2:#1e293b; --line:#233247;
+  --ink:#dbe5f1; --ink-dim:#8ba0b9; --ink-faint:#5b6f88;
+  --sky:#60a5fa; --sky-deep:#3b82f6; --mint:#34d399; --amber:#fbbf24; --rose:#f87171;
+  --mono:Consolas,"Cascadia Code","Courier New",monospace;
+  --sans:"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--navy-1);color:var(--ink);font-family:var(--sans);line-height:1.85;font-size:16px;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(59,130,246,.13), transparent),
+    repeating-linear-gradient(0deg, transparent 0 79px, rgba(96,165,250,.045) 79px 80px),
+    repeating-linear-gradient(90deg, transparent 0 79px, rgba(96,165,250,.045) 79px 80px);
+}
+::selection{background:rgba(96,165,250,.35)}
+a{color:var(--sky)}
+.wrap{max-width:820px;margin:0 auto;padding:0 28px 120px}
+nav{position:sticky;top:0;z-index:9;background:rgba(10,17,32,.88);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;padding:13px 28px;max-width:876px}
+nav .brand{font-weight:700}.nav .brand i{color:var(--sky);font-style:normal;margin-right:8px}
+section{margin-top:84px}
+.secno{font-family:var(--mono);font-size:12px;color:var(--sky);letter-spacing:3px}
+h2{font-size:26px;margin:6px 0 10px;letter-spacing:1px}
+h2::after{content:"";display:block;width:56px;height:3px;margin-top:12px;
+  background:repeating-linear-gradient(90deg,var(--sky-deep) 0 14px,transparent 14px 20px)}
+h3{font-size:17px;margin:30px 0 8px;color:var(--ink)}
+h3::before{content:"◈ ";color:var(--sky);font-size:14px}
+p{color:var(--ink-dim);margin:12px 0}
+p strong,li strong{color:var(--ink)}
+ul,ol{margin:10px 0 10px 22px;color:var(--ink-dim)}
+li{margin:7px 0}
+code{font-family:var(--mono);font-size:.9em;background:var(--navy-0);border:1px solid var(--line);
+  padding:2px 7px;border-radius:5px;color:var(--mint);word-break:break-all}
+blockquote{border-left:3px solid var(--sky-deep);background:var(--navy-2);margin:20px 0;
+  padding:16px 22px;border-radius:0 12px 12px 0;color:var(--ink);font-size:15px}
+blockquote p{margin:6px 0;color:var(--ink-dim)}
+blockquote b{color:var(--sky)}
+.card{background:var(--navy-2);border:1px solid var(--line);border-radius:14px;padding:22px 26px;margin:18px 0;
+  box-shadow:0 14px 34px rgba(2,6,16,.4)}
+.callout{border-radius:12px;padding:16px 20px;margin:18px 0;font-size:14.5px;border:1px solid}
+.callout b{display:block;margin-bottom:4px}
+.callout.ok{background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.35)}
+.callout.warn{background:rgba(251,191,36,.07);border-color:rgba(251,191,36,.35)}
+.callout.danger{background:rgba(248,113,113,.08);border-color:rgba(248,113,113,.4)}
+
+/* 图：航线 */
+.lane{display:flex;flex-direction:column;margin:22px 0}
+.hop{display:flex;align-items:center;gap:16px}
+.hop .node{background:var(--navy-0);border:1px solid var(--line);border-radius:10px;padding:11px 18px;
+  font-size:14px;color:var(--ink);flex:1;max-width:430px}
+.hop .node small{display:block;font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);letter-spacing:1px}
+.hop .tag{font-family:var(--mono);font-size:11px;color:var(--sky);white-space:nowrap;max-width:120px;text-align:right}
+.wake{width:2px;height:24px;margin-left:24px;
+  background:repeating-linear-gradient(180deg,var(--sky-deep) 0 6px,transparent 6px 12px);opacity:.55}
+.wake.red{background:repeating-linear-gradient(180deg,var(--rose) 0 6px,transparent 6px 12px)}
+.hop .node.dead{border-color:rgba(248,113,113,.4);color:var(--ink-dim)}
+.vs{display:flex;gap:16px;margin:20px 0;flex-wrap:wrap}
+.vs>div{flex:1;min-width:300px}
+.vs h4{font-family:var(--mono);font-size:12px;letter-spacing:2px;margin-bottom:10px}
+.vs .bad h4{color:var(--rose)} .vs .good h4{color:var(--mint)}
+
+/* 图：信任边界 */
+.trust{border:1px dashed var(--amber);border-radius:16px;padding:26px;margin:20px 0}
+.trust .label{font-family:var(--mono);font-size:11px;color:var(--amber);letter-spacing:2px;margin-bottom:14px}
+.trust .inner{border:1px dashed var(--sky);border-radius:12px;padding:20px}
+.trust .inner .label{color:var(--sky)}
+.pill{font-family:var(--mono);font-size:11.5px;padding:2px 10px;border-radius:99px;white-space:nowrap;display:inline-block;margin:3px 4px 3px 0}
+.pill.g{background:rgba(52,211,153,.14);color:var(--mint)}
+.pill.b{background:rgba(96,165,250,.14);color:var(--sky)}
+.pill.a{background:rgba(251,191,36,.14);color:var(--amber)}
+.pill.r{background:rgba(248,113,113,.14);color:var(--rose)}
+table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14.5px}
+th{font-family:var(--mono);font-size:12px;letter-spacing:2px;color:var(--ink-faint);text-align:left;padding:9px 14px;border-bottom:2px solid var(--line)}
+td{padding:11px 14px;border-bottom:1px solid var(--line);color:var(--ink-dim);vertical-align:top}
+td:first-child{color:var(--ink)}
+header.hero{padding:92px 0 10px}
+.hero .mark{font-family:var(--mono);letter-spacing:6px;font-size:12px;color:var(--sky)}
+.hero h1{font-size:44px;letter-spacing:2px;margin:14px 0 4px}
+.hero h1 span{color:var(--sky)}
+.hero .sub{font-size:17px;color:var(--ink-dim);max-width:660px;margin-top:12px}
+footer{margin-top:110px;border-top:1px solid var(--line);padding-top:26px;font-family:var(--mono);font-size:12px;color:var(--ink-faint);letter-spacing:1px}
+@media (max-width:640px){.hero h1{font-size:32px}.hop .tag{display:none}}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <span class="brand"><i>⚓</i>航道与灯塔 — TunnelDock 工作原理</span>
+</div></nav>
+
+<div class="wrap">
+
+<header class="hero">
+  <div class="mark">HOW IT WORKS · DEPTH 40 FATHOMS</div>
+  <h1>没有公网 IP 的电脑，<br>如何被<span>全世界</span>访问？</h1>
+  <p class="sub">这篇文章解释 TunnelDock 背后的每一层原理：反向连接为什么能打穿大内网、
+  Cloudflare 隧道如何工作、以及本地那道 PIN 门禁的五脏六腑。读完后你不仅能看懂它的架构，
+  还能自己排查任何一层的问题。</p>
+</header>
+
+<!-- 01 -->
+<section>
+  <div class="secno">CHAPTER 01</div>
+  <h2>问题：入站的路被谁堵死了</h2>
+  <p>家里的宽带、办公室的网络、手机的热点——绝大多数中国网络环境里，你的电脑<strong>没有公网 IP</strong>。
+  它躲在一个或多个 NAT（网络地址转换）设备后面，和几十上百台设备共享一个出口地址。</p>
+  <p>这带来一个不对称的事实：<strong>你主动连别人，畅通无阻；别人主动连你，无处可寻。</strong>
+  入站包到达运营商的 NAT 时，NAT 不知道该转给内网哪台机器，只能丢弃。</p>
+  <div class="vs">
+    <div class="bad">
+      <h4>✕ 传统方案：等别人连进来（入站）</h4>
+      <div class="lane">
+        <div class="hop"><div class="node">访客<small>CLIENT</small></div><span class="tag">→ 入站</span></div>
+        <div class="wake red"></div>
+        <div class="hop"><div class="node dead">运营商 NAT / 大内网<small>没有你的映射记录 · 包被丢弃</small></div><span class="tag">✕</span></div>
+        <div class="wake red"></div>
+        <div class="hop"><div class="node dead">你的电脑<small>永远收不到请求</small></div></div>
+      </div>
+      <p style="font-size:13.5px">解法通常要公网 IP、路由器端口映射、DDNS——普通人一样都凑不齐。</p>
+    </div>
+    <div class="good">
+      <h4>✓ 隧道方案：你先连出去（出站）</h4>
+      <div class="lane">
+        <div class="hop"><div class="node">你的电脑主动连出<small>OUTBOUND · NAT 从不拦出站</small></div><span class="tag">✓</span></div>
+        <div class="wake"></div>
+        <div class="hop"><div class="node">Cloudflare 边缘<small>记住这条连接 · 长期保持</small></div><span class="tag">HOLD</span></div>
+        <div class="wake"></div>
+        <div class="hop"><div class="node">访客的请求沿这条连接流回来<small>不是新的入站 · 是既有连接上的数据</small></div></div>
+      </div>
+    </div>
+  </div>
+  <blockquote>
+    <b>核心洞察</b>
+    <p>防火墙和 NAT 挡的是「未经请求的入站连接」。而隧道把方向反过来：内网机器<strong>主动</strong>与公网建立长连接并保持心跳，
+    之后所有访问都是「顺着这条已建立的连接往回流」——对 NAT 来说，这只是普通出站连接上的双向数据，一路绿灯。</p>
+  </blockquote>
+</section>
+
+<!-- 02 -->
+<section>
+  <div class="secno">CHAPTER 02</div>
+  <h2>Cloudflare 隧道：一条有名字的航道</h2>
+  <p>TunnelDock 站在 Cloudflare Tunnel（工具名 <code>cloudflared</code>）的肩膀上。它免费提供三样东西：</p>
+  <ol>
+    <li><strong>全球边缘节点</strong>：访客连到离他最近的 Cloudflare 节点（全球 300+ 城市），不直接碰你的电脑；</li>
+    <li><strong>隧道这个"账号资产"</strong>：每条命名隧道有 UUID，注册在你的 Cloudflare 账号里，持久存在；</li>
+    <li><strong>免费 TLS 证书</strong>：HTTPS 在边缘终结，自动签发续期——你什么都不用配。</li>
+  </ol>
+
+  <h3>三张"证"各管什么（别混淆）</h3>
+  <table>
+    <tr><th>凭证</th><th>怎么来的</th><th>它证明什么</th></tr>
+    <tr><td>cert.pem</td><td>浏览器里的一次性授权（tunnel login）</td><td>"我允许这台电脑管理我账号里的隧道和 DNS"——<strong>账号级钥匙，最高权限，绝不外传</strong></td></tr>
+    <tr><td>隧道 credentials JSON</td><td>创建隧道时 Cloudflare 签发</td><td>"持有者可以把这条隧道的流量接到自己机器"——每条隧道一张</td></tr>
+    <tr><td>DNS CNAME 记录</td><td>绑域名时自动创建</td><td>"这个子域名的流量，交给这条隧道"——路由表的一项</td></tr>
+  </table>
+
+  <h3>一次访问的完整航程</h3>
+  <div class="lane">
+    <div class="hop"><div class="node">手机浏览器输入 <code>https://pi.example.com</code><small>CLIENT</small></div><span class="tag">① DNS</span></div>
+    <div class="wake"></div>
+    <div class="hop"><div class="node">CNAME 指向 <code>&lt;隧道UUID&gt;.cfargotunnel.com</code> → 解析到边缘 IP<small>ROUTES</small></div><span class="tag">② 边缘</span></div>
+    <div class="wake"></div>
+    <div class="hop"><div class="node">最近的边缘节点终结 TLS，查到域名挂在隧道 X 名下<small>EDGE · TLS 终结</small></div><span class="tag">③ 查表</span></div>
+    <div class="wake"></div>
+    <div class="hop"><div class="node">从隧道 X 的 4 条活跃连接中挑一条，把请求送回来<small>连接是电脑主动连出时建好的（QUIC 或 http2）</small></div><span class="tag">④ 逆流</span></div>
+    <div class="wake"></div>
+    <div class="hop"><div class="node">你电脑上的 cloudflared 收到，按 ingress 配置转发给本机端口<small>INGRESS 表：域名 → 127.0.0.1:端口</small></div><span class="tag">⑤ 落地</span></div>
+  </div>
+  <p><strong>为什么地址永远不变？</strong>因为变的是"连接"（断了重连就好），不变的是"隧道 UUID + 域名记录"——
+  边缘永远按 UUID 找连接，跟地址无关。而免费的临时隧道（Quick Tunnel）没有自己的名字，
+  每次连接分配一个随机子域，断开即回收——这就是它地址天天变的根本原因。</p>
+
+  <h3>QUIC 与 http2：两种航道底质</h3>
+  <p>cloudflared 与边缘之间默认走 <strong>QUIC（基于 UDP）</strong>，低延迟、抗丢包。但有些网络（典型如部分移动宽带）
+  会干扰 UDP。TunnelDock 的对策：QUIC 连不上时，第二次重连自动切换 <strong>http2（基于 TCP）</strong>——
+  TCP 走的是浏览网页同款通道，几乎不可能被单独掐死。切换成功后记住偏好，之后直接走 TCP。</p>
+</section>
+
+<!-- 03 -->
+<section>
+  <div class="secno">CHAPTER 03</div>
+  <h2>裸隧道为什么不能直接用：PIN 门禁的五脏</h2>
+  <p>Cloudflare 隧道只解决「可达」，不解决「可信」。<strong>一条裸隧道等于把你电脑上的服务直接裸奔到公网</strong>——
+  全网扫描器几小时内就会找上门。所以 TunnelDock 在 cloudflared 和你的服务之间，放了一道自己造的门：</p>
+
+  <div class="trust">
+    <div class="label">公网区 · 谁都能敲门</div>
+    <div class="inner">
+      <div class="label">TunnelDock 网关区 · 第一道门</div>
+      <div class="inner" style="border-color:var(--mint)">
+        <div class="label" style="color:var(--mint)">本机服务区 · 第二道门（服务自身的账号体系，如有）</div>
+        <p style="margin:4px 0 0"><span class="pill g">127.0.0.1:端口</span><span class="pill b">只能经网关到达</span></p>
+      </div>
+    </div>
+  </div>
+
+  <h3>① 口令墙：登录页 + 会话 Cookie</h3>
+  <p>未认证的请求一律收到一张登录页（输 PIN）。验证通过后发放 <code>HttpOnly + SameSite=Strict</code> 的
+  会话 Cookie，12 小时免重复输入。口令比对用的是<strong>常量时间比较</strong>——连"响应快慢"这种侧信道都不给攻击者留。</p>
+
+  <h3>② 限速：让爆破者排队</h3>
+  <p>同一 IP 在 60 秒窗口内错 5 次，封锁 60 秒并返回 429。算一笔账：8 位数字 PIN 有一亿种组合，
+  即使不限速按每秒 10 次猜也要 116 天；有了限速（每分钟最多 10 次），需要<strong>十九年</strong>。
+  这也是为什么"PIN 别短于 8 位"写在手册页脚。</p>
+
+  <h3>③ WebSocket 透传</h3>
+  <p>现代 Web 应用的流式输出（AI 对话、终端、日志）都走 WebSocket。网关在 HTTP 升级握手时同样验票，
+  通过后把 TCP 流原样对接——<strong>只验一次票，之后当透明管道</strong>，不解析不缓存。</p>
+
+  <h3>④ 来源头清洗：让"挑剔"的服务以为是本机在访问</h3>
+  <p>很多服务（各类 agent 控制台尤其常见）自带<strong>Host/Origin 围栏</strong>：校验请求的 Host 和 Origin 是否同源，
+  以防 DNS 重绑定攻击。但经隧道访问时，浏览器发的 Origin 是公网域名、转发到本机时 Host 变成了
+  <code>127.0.0.1</code>——两者不一致，服务直接 403 拒绝（症状：页面打得开、一点按钮没反应）。
+  网关的解法：转发前<strong>剥掉 Origin/Referer/Sec-Fetch-Site 并重写 Host</strong>——信任判断已经由 PIN 承担，
+  上游不必再看这些可伪造的头。</p>
+
+  <h3>⑤ 令牌引导：代拿一次性门票</h3>
+  <p>少数服务（如 dsh web）还有第二道自有门禁：首次访问必须在地址栏带一次性 <code>?token=</code>，
+  换到它自己的会话 Cookie。这个 token 只在服务日志里打印。令牌引导功能让网关在收到这类 401 时，
+  自动去指定日志文件里<strong>捞最新一条 token 替你带上</strong>——token 轮换也每次现读，永远跟上。</p>
+</section>
+
+<!-- 04 -->
+<section>
+  <div class="secno">CHAPTER 04</div>
+  <h2>自愈：没人值守时的求生本能</h2>
+  <p>隧道类工具最大的体验杀手是「不知道什么时候断了」。TunnelDock 给每个发布配了一套状态机
+  <span class="pill b">idle → starting → ready</span> <span class="pill a">error</span>，和四条自愈规则：</p>
+  <table>
+    <tr><th>故障</th><th>自愈动作</th></tr>
+    <tr><td>隧道断线（QUIC 被掐 / 网络抖动）</td><td>按 5s → 15s → 60s 指数退避重连；连续失败自动切 http2（TCP）并记住</td></tr>
+    <tr><td>网关进程崩溃</td><td>独立监督者发现后走同一条重连链路重建（崩溃原因常见为异常断开，已加流错误兜底）</td></tr>
+    <tr><td>电脑重启</td><td>登录时静默启动（<code>--hidden</code>），错峰恢复所有「自启」标记的发布</td></tr>
+    <tr><td>渲染界面崩溃</td><td>主进程检测到后自动重载窗口，后台服务不受影响</td></tr>
+  </table>
+  <div class="callout ok"><b>工程细节两枚</b>
+    <p>① 网关跑在 Electron 的 utilityProcess 里——独立进程，崩了不拖垮主程序；② 对上游禁用连接复用
+    （agent:false）——避免"断开的旧连接"污染下一个请求。两条都是从真实故障里换来的。</p>
+  </div>
+</section>
+
+<!-- 05 -->
+<section>
+  <div class="secno">CHAPTER 05</div>
+  <h2>安全模型：一图看懂谁守哪道门</h2>
+  <div class="card">
+    <table>
+      <tr><th>环节</th><th>守门人</th><th>挡住什么</th></tr>
+      <tr><td>Cloudflare 边缘</td><td>TLS 加密</td><td>链路窃听；DDS 攻击吸收</td></tr>
+      <tr><td>网关第一道门</td><td>PIN + 限速 + 常量时间比较</td><td>匿名访问、口令爆破</td></tr>
+      <tr><td>网关内部</td><td>Host 重写 / 来源头清洗 / 令牌引导</td><td>服务的自有围栏误伤合法流量</td></tr>
+      <tr><td>服务自身（如有）</td><td>账号体系 / 自有 token</td><td>知道 PIN 但无权限的人</td></tr>
+      <tr><td>本机边界</td><td>网关只监听 127.0.0.1</td><td>局域网内绕过 PIN 直连服务</td></tr>
+    </table>
+  </div>
+  <div class="callout danger"><b>诚实的边界</b>
+    <p>这不是企业级方案：PIN 是单因素认证，无审计日志，限速针对单 IP。它适合个人与小团队把
+    「值得保护但非绝密」的服务开到公网。Web 终端、生产数据库这类目标，请再叠加服务自身的强认证，
+    或者——干脆别开。</p>
+  </div>
+</section>
+
+<!-- 06 -->
+<section>
+  <div class="secno">EPILOGUE</div>
+  <h2>结语：三个设计决定</h2>
+  <ol>
+    <li><strong>站在巨人背上，只造巨人不造的东西。</strong>打洞交给 Cloudflare（免费、全球、可信），
+    TunnelDock 只做它不做的：<strong>鉴权、适配、自愈</strong>。92MB 的安装包里，真正的自研代码只有 60KB。</li>
+    <li><strong>默认安全，而不是可选安全。</strong>PIN 墙、限速、回环监听全是默认行为，没有「关掉保护」的开关——
+    因为可选的安全迟早会被方便性牺牲掉。</li>
+    <li><strong>把每一次故障变成一层免疫力。</strong>IPv6 陷阱、QUIC 封锁、DNS 抽风、来源头围栏——
+    每个真实故障最后都沉淀为自动行为或排障口诀。软件的健壮性不是设计出来的，是这么长出来的。</li>
+  </ol>
+  <footer>⚓ 航道与灯塔 · TUNNELDOCK PRINCIPLES · 与《使用说明》同属航海手册系列</footer>
+</section>
+
+</div>
+</body>
+</html>
