@@ -98,7 +98,8 @@ async function startService(id: string, isReconnect = false): Promise<ServiceSta
           targetHost: svc.targetHost,
           targetPort: svc.targetPort,
           pin: svc.pin,
-          serviceName: svc.name
+          serviceName: svc.name,
+          tokenSource: svc.tokenFile || ''
         },
         (level, msg) => console.log(`[gateway:${svc.name}] ${level} ${msg}`)
       )
@@ -276,6 +277,14 @@ export function registerIpc(): void {
     return svc
   })
   ipcMain.handle('td:hasOriginCert', () => hasOriginCert())
+  ipcMain.handle('td:setTokenFile', (_e, id: string, file: string) => {
+    const f = String(file || '').trim()
+    const svc = registry.update(id, { tokenFile: f })
+    if (!svc) throw new Error('服务不存在')
+    // 令牌引导变更需重启网关生效
+    if (rt(id).status.status === 'ready') stopService(id)
+    return svc
+  })
   ipcMain.handle('td:appAutostart:get', () => getAppAutostart())
   ipcMain.handle('td:appAutostart:set', (_e, on: boolean) => {
     setAppAutostart(on === true)

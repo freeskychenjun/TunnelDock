@@ -5,6 +5,7 @@
 const http = require('http')
 const net = require('net')
 const crypto = require('crypto')
+const fs = require('fs')
 
 const cfgArg = process.argv.find((a) => a.startsWith('{'))
 const cfg = cfgArg ? JSON.parse(cfgArg) : {}
@@ -15,6 +16,9 @@ const TARGET_PORT = Number(cfg.targetPort || 80)
 const PIN = String(cfg.pin || '')
 const SERVICE_NAME = cfg.serviceName || 'service'
 const UPSTREAM_HOST = `${TARGET_HOST}:${TARGET_PORT}`
+// 服务自带令牌引导（如 dsh web 的启动 token）：从指定文件里取最新一条
+// `token=xxx` 作为 ?token= 引导一次。留空 = 不启用。
+const TOKEN_SOURCE_FILE = cfg.tokenSource || ''
 
 const AUTH_USER = 'tunneldock' // Basic 认证用户名，口令即 PIN
 const COOKIE_NAME = 'td_auth'
@@ -139,6 +143,29 @@ function proxyReq(req, res) {
   delete headers['sec-fetch-site']
   const options = { host: TARGET_HOST, port: TARGET_PORT, method: req.method, path: req.url, headers, agent: false } // agent:false —— 不复用上游连接，避免客户端断开后第一个请求撞上半死 socket
   const proxy = http.request(options, (pres) => {
+    // 服务令牌引导：上游对根路径回 401 且请求未带 token 参数时，
+    // 从令牌源文件取最新 token 重定向一次（带上 token 后上游会下发会话 Cookie）。
+    // 只在无 token 参数时重定向 → 天然防循环（令牌失效则透传 401）。
+    if (TOKEN_SOURCE_FILE && pres.statusCode === 401 && req.method === 'GET') {
+      const u = new URL(req.url || '/', 'http://x')
+      const isRoot = u.pathname === '/' || u.pathname === '/index.html'
+      if (isRoot && !u.searchParams.has('token')) {
+        try {
+          const text = fs.readFileSync(TOKEN_SOURCE_FILE, 'utf8')
+          const found = text.match(/token=([A-Za-z0-9_-]+)/g)
+          if (found && found.length > 0) {
+            const tok = found[found.length - 1].slice(6)
+            post({ type: 'log', level: 'info', message: '上游 401 → 注入服务令牌引导' })
+            pres.resume() // 丢弃上游响应体
+            res.writeHead(303, { Location: '/?token=' + encodeURIComponent(tok), 'Cache-Control': 'no-store' })
+            res.end()
+            return
+          }
+        } catch {
+          /* 令牌文件读失败 → 按原样透传 401 */
+        }
+      }
+    }
     res.writeHead(pres.statusCode, pres.headers)
     pres.pipe(res)
     // 双向流错误兜底：客户端中途断开（关页面/换网络/SSE 被杀）会触发

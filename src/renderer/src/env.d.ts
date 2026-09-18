@@ -12,6 +12,7 @@ declare interface Window {
     setPin: (id: string, pin: string) => Promise<ServiceConfig>
     setAutoStart: (id: string, on: boolean) => Promise<ServiceConfig>
     setHostname: (id: string, hostname: string) => Promise<ServiceConfig>
+  setTokenFile: (id: string, file: string) => Promise<ServiceConfig>
     hasOriginCert: () => Promise<boolean>
     getAppAutostart: () => Promise<boolean>
     setAppAutostart: (on: boolean) => Promise<boolean>
@@ -26,6 +27,7 @@ declare interface ServiceConfig {
   targetPort: number
   pin: string
   hostname: string
+  tokenFile: string
   autoStart: boolean
   createdAt: number
 }

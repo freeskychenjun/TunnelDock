@@ -11,6 +11,7 @@ export interface ServiceConfig {
   targetPort: number
   pin: string
   hostname: string // 留空 = 免费临时地址（Quick Tunnel）；填域名 = 命名隧道固定地址
+  tokenFile: string // 服务自带令牌的来源文件（如 dsh web 的 pm2 日志）；留空 = 不启用引导
   autoStart: boolean
   createdAt: number
 }
@@ -60,6 +61,10 @@ class Registry {
         s.hostname = ''
         dirty = true
       }
+      if (typeof s.tokenFile !== 'string') {
+        s.tokenFile = ''
+        dirty = true
+      }
     }
     if (dirty) this.save()
   }
@@ -84,6 +89,7 @@ class Registry {
       targetPort,
       pin: pin || genPin(),
       hostname: '',
+      tokenFile: '',
       autoStart: true, // 默认：随 TunnelDock 启动自动恢复
       createdAt: Date.now()
     }

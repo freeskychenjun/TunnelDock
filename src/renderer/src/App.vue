@@ -8,6 +8,7 @@ const showCreate = ref(false)
 const qr = ref<{ url: string; name: string; pin: string; dataUrl: string } | null>(null)
 const pinEdit = ref<{ id: string; name: string; value: string } | null>(null)
 const hostEdit = ref<{ id: string; name: string; value: string } | null>(null)
+const tokenEdit = ref<{ id: string; name: string; value: string } | null>(null)
 const form = ref({ name: '', host: '127.0.0.1', port: '', pin: '', hostname: '' })
 const busy = ref(false)
 const toast = ref('')
@@ -83,6 +84,18 @@ async function saveHostname(): Promise<void> {
     await window.tunneldock.setHostname(hostEdit.value.id, hostEdit.value.value.trim())
     showToast('域名已更新（运行中的发布已停止，需重新启动）')
     hostEdit.value = null
+    await refresh()
+  } catch (e) {
+    showToast((e as Error).message)
+  }
+}
+
+async function saveTokenFile(): Promise<void> {
+  if (!tokenEdit.value) return
+  try {
+    await window.tunneldock.setTokenFile(tokenEdit.value.id, tokenEdit.value.value.trim())
+    showToast('令牌引导已更新（运行中的发布已停止，需重新启动）')
+    tokenEdit.value = null
     await refresh()
   } catch (e) {
     showToast((e as Error).message)
@@ -204,6 +217,9 @@ const STATUS_TEXT: Record<string, string> = {
           <button class="mini ghost" :title="svc.hostname ? '修改固定域名' : '绑定固定域名（需 Cloudflare 授权）'" @click="hostEdit = { id: svc.id, name: svc.name, value: svc.hostname }">
             {{ svc.hostname ? '改域名' : '设域名' }}
           </button>
+          <button class="mini ghost" :class="{ on: svc.tokenFile }" title="服务自带访问令牌时（如 dsh web），填打印该令牌的日志文件路径，首次访问自动引导" @click="tokenEdit = { id: svc.id, name: svc.name, value: svc.tokenFile }">
+            {{ svc.tokenFile ? '令牌✓' : '令牌引导' }}
+          </button>
           <span v-if="svc.hostname" class="hosttag">🔒 {{ svc.hostname }}</span>
           <span class="spacer" />
           <label class="switcher small" title="TunnelDock 启动时自动恢复此发布">
@@ -258,6 +274,21 @@ const STATUS_TEXT: Record<string, string> = {
         <div class="actions">
           <button class="mini" @click="hostEdit = null">取消</button>
           <button class="primary" @click="saveHostname">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 令牌引导 -->
+    <div v-if="tokenEdit" class="mask" @click.self="tokenEdit = null">
+      <div class="modal">
+        <h3>令牌引导 · {{ tokenEdit.name }}</h3>
+        <label>令牌来源文件（服务打印 ?token= 的日志路径；留空 = 关闭）</label>
+        <input v-model="tokenEdit.value" placeholder="C:\Users\你\.pm2\logs\dsh-web-out.log" />
+        <p class="hintbox">适用于「首次访问必须在地址栏带 ?token=…」的服务（典型：dsh web）。<br />
+        网关会在服务返回 401 时自动读取该文件里最新一条 token 并引导一次；令牌换了也自动跟上。</p>
+        <div class="actions">
+          <button class="mini" @click="tokenEdit = null">取消</button>
+          <button class="primary" @click="saveTokenFile">保存</button>
         </div>
       </div>
     </div>

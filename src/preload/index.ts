@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('tunneldock', {
   setPin: (id: string, pin: string): Promise<ServiceConfig> => ipcRenderer.invoke('td:setPin', id, pin),
   setAutoStart: (id: string, on: boolean): Promise<ServiceConfig> => ipcRenderer.invoke('td:setAutoStart', id, on),
   setHostname: (id: string, hostname: string): Promise<ServiceConfig> => ipcRenderer.invoke('td:setHostname', id, hostname),
+  setTokenFile: (id: string, file: string): Promise<ServiceConfig> => ipcRenderer.invoke('td:setTokenFile', id, file),
   hasOriginCert: (): Promise<boolean> => ipcRenderer.invoke('td:hasOriginCert'),
   // 应用级开机自启
   getAppAutostart: (): Promise<boolean> => ipcRenderer.invoke('td:appAutostart:get'),
