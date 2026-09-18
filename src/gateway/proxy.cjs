@@ -137,16 +137,27 @@ function proxyReq(req, res) {
   delete headers['origin']
   delete headers['referer']
   delete headers['sec-fetch-site']
-  const options = { host: TARGET_HOST, port: TARGET_PORT, method: req.method, path: req.url, headers }
+  const options = { host: TARGET_HOST, port: TARGET_PORT, method: req.method, path: req.url, headers, agent: false } // agent:false —— 不复用上游连接，避免客户端断开后第一个请求撞上半死 socket
   const proxy = http.request(options, (pres) => {
     res.writeHead(pres.statusCode, pres.headers)
     pres.pipe(res)
+    // 双向流错误兜底：客户端中途断开（关页面/换网络/SSE 被杀）会触发
+    // res/pres 的 error/aborted —— 不处理会让未捕获错误击穿整个进程
+    pres.on('error', () => proxy.destroy())
+    res.on('error', () => {
+      pres.destroy()
+      proxy.destroy()
+    })
+    res.on('close', () => {
+      if (!pres.complete) pres.destroy()
+    })
   })
   proxy.on('error', (e) => {
     post({ type: 'log', level: 'error', message: `上游连接失败: ${e.message}` })
     if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
     res.end('Bad Gateway: 目标服务不可达（' + SERVICE_NAME + '）')
   })
+  req.on('error', () => proxy.destroy())
   req.pipe(proxy)
 }
 

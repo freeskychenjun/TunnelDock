@@ -103,6 +103,15 @@ async function startService(id: string, isReconnect = false): Promise<ServiceSta
         (level, msg) => console.log(`[gateway:${svc.name}] ${level} ${msg}`)
       )
       r.gateway = gw
+      // 网关进程崩溃监督（此前只有 cloudflared 有）：utilityProcess 意外退出时
+      // 走同一条重连链路，否则 cloudflared 会指着一个死端口永远 502
+      gw.process.on('exit', () => {
+        const cur = rt(id)
+        if (cur.gateway === gw && cur.desired === 'running') {
+          cur.gateway = null
+          scheduleReconnect(id, '网关代理进程退出，正在重建')
+        }
+      })
 
       // 2) 快隧道指向代理
       const t = await startTunnel(gw.port, 60000, (line) => console.log(`[cf:${svc.name}] ${line}`))
@@ -145,6 +154,7 @@ async function startService(id: string, isReconnect = false): Promise<ServiceSta
 
 function scheduleReconnect(id: string, reason = '隧道连接断开'): void {
   const r = rt(id)
+  if (r.reconnectTimer) return // 已有重连在排队（网关与隧道可能接连退出，只排一次）
   const delay = BACKOFF_MS[Math.min(r.attempts, BACKOFF_MS.length - 1)]
   r.attempts += 1
   const svc = registry.get(id)
