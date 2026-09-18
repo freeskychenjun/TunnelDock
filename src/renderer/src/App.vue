@@ -252,8 +252,8 @@ const STATUS_TEXT: Record<string, string> = {
     <div v-if="hostEdit" class="mask" @click.self="hostEdit = null">
       <div class="modal">
         <h3>固定域名 · {{ hostEdit.name }}</h3>
-        <label>域名（如 pi.freeskychenjun.com；留空 = 用免费临时地址）</label>
-        <input v-model="hostEdit.value" placeholder="pi.freeskychenjun.com" />
+        <label>域名（如 pi.example.com；留空 = 用免费临时地址）</label>
+        <input v-model="hostEdit.value" placeholder="pi.example.com" />
         <p class="hintbox">绑定后地址永久固定，重启/断线重连都不变，手机可收藏。</p>
         <div class="actions">
           <button class="mini" @click="hostEdit = null">取消</button>
