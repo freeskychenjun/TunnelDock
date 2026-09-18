@@ -1,8 +1,10 @@
 // cloudflared 生命周期：定位二进制 → 起快隧道 → 解析公网 URL → 探活 → 可 kill
+// M3：命名隧道（固定域名，需 Cloudflare 账号 + cert.pem + 自有域名）
 import { spawn, ChildProcess, execFileSync } from 'child_process'
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
+import { randomUUID } from 'crypto'
 
 export interface TunnelHandle {
   url: string
@@ -117,4 +119,130 @@ export function stopTunnel(child: ChildProcess): void {
   } catch {
     /* 已退出 */
   }
+}
+
+// ---------- M3：命名隧道（固定域名） ----------
+
+export function cloudflaredDir(): string {
+  return join(process.env.USERPROFILE || '.', '.cloudflared')
+}
+
+export function hasOriginCert(): boolean {
+  return existsSync(join(cloudflaredDir(), 'cert.pem'))
+}
+
+function cfSync(args: string[], timeoutMs = 30000): string {
+  const exe = locateCloudflared()
+  if (!exe) throw new Error('未找到 cloudflared')
+  return execFileSync(exe, args, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true })
+}
+
+const ID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
+
+/** 确保（幂等）：隧道存在 + DNS 路由指向它；返回隧道 UUID */
+export function ensureNamedTunnel(tunnelName: string, hostname: string): string {
+  let tunnelId = ''
+  try {
+    const list = cfSync(['tunnel', 'list'])
+    const m = list.split(/\r?\n/).find((l) => l.includes(tunnelName))
+    if (m) tunnelId = (m.match(ID_RE) || [''])[0]
+  } catch {
+    /* list 失败按不存在处理 */
+  }
+  if (!tunnelId) {
+    const created = cfSync(['tunnel', 'create', tunnelName])
+    tunnelId = (created.match(ID_RE) || [''])[0]
+    if (!tunnelId) throw new Error(`创建隧道失败：${created.slice(0, 200)}`)
+  }
+  // DNS 路由（已存在且指向同一隧道时 cloudflared 报错，忽略之）
+  try {
+    cfSync(['tunnel', 'route', 'dns', tunnelId, hostname])
+  } catch (e) {
+    const msg = (e as Error).message || ''
+    if (!/already exists|已存在/i.test(msg)) throw e
+  }
+  return tunnelId
+}
+
+/** 启动命名隧道：写 ingress 配置 → cloudflared run；URL 固定为 https://hostname */
+export function startNamedTunnel(opts: {
+  tunnelName: string
+  hostname: string
+  proxyPort: number
+  serviceId: string
+  onLog?: (line: string) => void
+  timeoutMs?: number
+}): Promise<TunnelHandle> {
+  const exe = locateCloudflared()
+  if (!exe) return Promise.reject(new Error('未找到 cloudflared'))
+  if (!hasOriginCert()) {
+    return Promise.reject(new Error('尚未完成 Cloudflare 授权（cert.pem 缺失）'))
+  }
+  const tunnelId = ensureNamedTunnel(opts.tunnelName, opts.hostname)
+  const credFile = join(cloudflaredDir(), `${tunnelId}.json`)
+  const cfgDir = join(app.getPath('userData'), 'data', 'tunnels')
+  mkdirSync(cfgDir, { recursive: true })
+  const cfgFile = join(cfgDir, `${opts.serviceId}.yml`)
+  writeFileSync(
+    cfgFile,
+    [
+      `tunnel: ${tunnelId}`,
+      `credentials-file: ${credFile}`,
+      'no-autoupdate: true',
+      'ingress:',
+      `  - hostname: ${opts.hostname}`,
+      `    service: http://127.0.0.1:${opts.proxyPort}`,
+      '  - service: http_status:404',
+      ''
+    ].join('\n'),
+    'utf8'
+  )
+  return new Promise<TunnelHandle>((resolve, reject) => {
+    const child = spawn(exe, ['tunnel', '--config', cfgFile, 'run'], { windowsHide: true })
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      child.kill()
+      reject(new Error('命名隧道 60 秒内未注册成功'))
+    }, opts.timeoutMs ?? 60000)
+    const onData = (d: Buffer): void => {
+      const text = d.toString()
+      for (const line of text.split(/\r?\n/)) {
+        if (/ERR|Registered|Failed/i.test(line)) opts.onLog?.(line.trim().slice(0, 200))
+      }
+      if (!settled && /Registered tunnel connection/i.test(text)) {
+        settled = true
+        clearTimeout(timer)
+        resolve({ url: `https://${opts.hostname}`, child })
+      }
+    }
+    child.stderr?.on('data', onData)
+    child.stdout?.on('data', onData)
+    child.on('error', (e) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(new Error(`cloudflared 启动失败: ${e.message}`))
+    })
+    child.on('exit', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(new Error(`cloudflared 提前退出（code ${code}）`))
+    })
+  })
+}
+
+/** 供外部检查登录状态用 */
+export function waitForCert(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  return new Promise((resolve) => {
+    const tick = (): void => {
+      if (hasOriginCert()) return resolve(true)
+      if (Date.now() > deadline) return resolve(false)
+      setTimeout(tick, 1500)
+    }
+    tick()
+  })
 }

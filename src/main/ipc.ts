@@ -4,7 +4,7 @@ import { ipcMain, BrowserWindow, app, Notification } from 'electron'
 import { join } from 'path'
 import { registry, ServiceConfig, genPin } from './registry'
 import { startGateway, stopGateway, GatewayHandle } from './gateway'
-import { startTunnel, probeReady, stopTunnel } from './tunnel'
+import { startTunnel, startNamedTunnel, probeReady, stopTunnel, hasOriginCert } from './tunnel'
 import type { ChildProcess } from 'child_process'
 
 export interface ServiceState {
@@ -113,8 +113,17 @@ async function startService(id: string, isReconnect = false): Promise<ServiceSta
         }
       })
 
-      // 2) 快隧道指向代理
-      const t = await startTunnel(gw.port, 60000, (line) => console.log(`[cf:${svc.name}] ${line}`))
+      // 2) 隧道：有域名走命名隧道（固定地址），否则免费临时地址
+      const cfLog = (line: string): void => console.log(`[cf:${svc.name}] ${line}`)
+      const t = svc.hostname
+        ? await startNamedTunnel({
+            tunnelName: `tunneldock-${svc.id}`,
+            hostname: svc.hostname,
+            proxyPort: gw.port,
+            serviceId: svc.id,
+            onLog: cfLog
+          })
+        : await startTunnel(gw.port, 60000, cfLog)
       r.tunnelChild = t.child
       t.child.on('exit', () => {
         const cur = rt(id)
@@ -252,6 +261,21 @@ export function registerIpc(): void {
     if (!svc) throw new Error('服务不存在')
     return svc
   })
+  ipcMain.handle('td:setHostname', (_e, id: string, hostname: string) => {
+    const host = String(hostname || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+    if (host && !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(host)) {
+      throw new Error('域名格式不对（如 pi.example.com）')
+    }
+    if (host && !hasOriginCert()) {
+      throw new Error('尚未完成 Cloudflare 授权，无法使用固定域名')
+    }
+    const svc = registry.update(id, { hostname: host })
+    if (!svc) throw new Error('服务不存在')
+    // 域名变更 = 隧道形态变化，正在跑的必须重启生效
+    if (rt(id).status.status === 'ready') stopService(id)
+    return svc
+  })
+  ipcMain.handle('td:hasOriginCert', () => hasOriginCert())
   ipcMain.handle('td:appAutostart:get', () => getAppAutostart())
   ipcMain.handle('td:appAutostart:set', (_e, on: boolean) => {
     setAppAutostart(on === true)

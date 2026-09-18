@@ -7,10 +7,12 @@ const states = ref<Record<string, ServiceState>>({})
 const showCreate = ref(false)
 const qr = ref<{ url: string; name: string; pin: string; dataUrl: string } | null>(null)
 const pinEdit = ref<{ id: string; name: string; value: string } | null>(null)
-const form = ref({ name: '', host: '127.0.0.1', port: '', pin: '' })
+const hostEdit = ref<{ id: string; name: string; value: string } | null>(null)
+const form = ref({ name: '', host: '127.0.0.1', port: '', pin: '', hostname: '' })
 const busy = ref(false)
 const toast = ref('')
 const appAutostart = ref(false)
+const hasCert = ref(false)
 
 function showToast(msg: string): void {
   toast.value = msg
@@ -32,6 +34,7 @@ async function refresh(): Promise<void> {
 onMounted(async () => {
   void refresh()
   appAutostart.value = await window.tunneldock.getAppAutostart()
+  hasCert.value = await window.tunneldock.hasOriginCert()
   window.tunneldock.onEvent((st) => {
     const m: Record<string, ServiceState> = {}
     for (const s of st) m[s.id] = s
@@ -50,6 +53,11 @@ async function createService(): Promise<void> {
     showToast('自定义口令需 6-32 位（字母/数字/@#$%^&*-）')
     return
   }
+  const hostname = form.value.hostname.trim().toLowerCase()
+  if (hostname && !hasCert.value) {
+    showToast('固定域名需先完成 Cloudflare 授权（联系开发者运行 tunnel login）')
+    return
+  }
   busy.value = true
   try {
     await window.tunneldock.create({
@@ -59,13 +67,25 @@ async function createService(): Promise<void> {
       pin: pin || undefined
     })
     showCreate.value = false
-    form.value = { name: '', host: '127.0.0.1', port: '', pin: '' }
+    form.value = { name: '', host: '127.0.0.1', port: '', pin: '', hostname: '' }
     await refresh()
     showToast('已创建，点「启动」发布到公网')
   } catch (e) {
     showToast((e as Error).message)
   } finally {
     busy.value = false
+  }
+}
+
+async function saveHostname(): Promise<void> {
+  if (!hostEdit.value) return
+  try {
+    await window.tunneldock.setHostname(hostEdit.value.id, hostEdit.value.value.trim())
+    showToast('域名已更新（运行中的发布已停止，需重新启动）')
+    hostEdit.value = null
+    await refresh()
+  } catch (e) {
+    showToast((e as Error).message)
   }
 }
 
@@ -181,6 +201,10 @@ const STATUS_TEXT: Record<string, string> = {
           <button class="mini ghost" @click="copy(svc.pin, '口令')">复制</button>
           <button class="mini ghost" @click="pinEdit = { id: svc.id, name: svc.name, value: '' }">改口令</button>
           <button class="mini ghost" @click="resetPin(svc.id)">重置8位PIN</button>
+          <button class="mini ghost" :title="svc.hostname ? '修改固定域名' : '绑定固定域名（需 Cloudflare 授权）'" @click="hostEdit = { id: svc.id, name: svc.name, value: svc.hostname }">
+            {{ svc.hostname ? '改域名' : '设域名' }}
+          </button>
+          <span v-if="svc.hostname" class="hosttag">🔒 {{ svc.hostname }}</span>
           <span class="spacer" />
           <label class="switcher small" title="TunnelDock 启动时自动恢复此发布">
             <input type="checkbox" :checked="svc.autoStart" @change="toggleAutoStart(svc)" /> 自启
@@ -220,6 +244,20 @@ const STATUS_TEXT: Record<string, string> = {
         <div class="actions">
           <button class="mini" @click="pinEdit = null">取消</button>
           <button class="primary" @click="savePin">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 设域名（命名隧道 = 固定地址） -->
+    <div v-if="hostEdit" class="mask" @click.self="hostEdit = null">
+      <div class="modal">
+        <h3>固定域名 · {{ hostEdit.name }}</h3>
+        <label>域名（如 pi.freeskychenjun.com；留空 = 用免费临时地址）</label>
+        <input v-model="hostEdit.value" placeholder="pi.freeskychenjun.com" />
+        <p class="hintbox">绑定后地址永久固定，重启/断线重连都不变，手机可收藏。</p>
+        <div class="actions">
+          <button class="mini" @click="hostEdit = null">取消</button>
+          <button class="primary" @click="saveHostname">保存</button>
         </div>
       </div>
     </div>
@@ -293,6 +331,8 @@ button { font-family: inherit; cursor: pointer; border-radius: 8px; }
 .modal label { display: block; font-size: 12px; color: #94a3b8; margin: 12px 0 4px; }
 .modal input { width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid #2b3340; background: #0f1319; color: #eef1f5; font-size: 14px; }
 .modal input:focus { outline: none; border-color: #3b82f6; }
+.hintbox { font-size: 12px; color: #64748b; margin-top: 8px; line-height: 1.6; }
+.hosttag { font-size: 12px; color: #6ee7b7; background: #064e3b; padding: 3px 10px; border-radius: 10px; }
 .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .qrbox { text-align: center; }
 .qrbox img { width: 240px; height: 240px; background: #fff; border-radius: 8px; padding: 6px; }

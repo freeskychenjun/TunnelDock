@@ -1,7 +1,7 @@
 {
   "name": "tunneldock",
   "productName": "TunnelDock",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "隧道坞 TunnelDock — 把内网 Web 服务一键安全发布到公网",
   "main": "out/main/index.js",
   "author": "Agui",

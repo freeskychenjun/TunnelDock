@@ -10,7 +10,8 @@ export interface ServiceConfig {
   targetHost: string
   targetPort: number
   pin: string
-  autoStart: boolean // TunnelDock 启动时是否自动恢复发布
+  hostname: string // 留空 = 免费临时地址（Quick Tunnel）；填域名 = 命名隧道固定地址
+  autoStart: boolean
   createdAt: number
 }
 
@@ -47,12 +48,16 @@ class Registry {
     } catch {
       this.cache = []
     }
-    // 自愈：历史数据里的 host 可能带协议头/路径（用户整段粘贴 URL 所致）
+    // 自愈：历史数据里的 host 可能带协议头/路径（用户整段粘贴 URL 所致）；补缺省 hostname
     let dirty = false
     for (const s of this.cache) {
       const fixed = normalizeHost(s.targetHost)
       if (fixed && fixed !== s.targetHost && HOST_RE.test(fixed)) {
         s.targetHost = fixed
+        dirty = true
+      }
+      if (typeof s.hostname !== 'string') {
+        s.hostname = ''
         dirty = true
       }
     }
@@ -78,6 +83,7 @@ class Registry {
       targetHost,
       targetPort,
       pin: pin || genPin(),
+      hostname: '',
       autoStart: true, // 默认：随 TunnelDock 启动自动恢复
       createdAt: Date.now()
     }
