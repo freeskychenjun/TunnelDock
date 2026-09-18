@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TunnelDock 隧道坞 · 使用说明</title>
+<style>
+:root{
+  --navy-0:#0a1120; --navy-1:#0f172a; --navy-2:#1e293b; --line:#233247;
+  --ink:#dbe5f1; --ink-dim:#8ba0b9; --ink-faint:#5b6f88;
+  --sky:#60a5fa; --sky-deep:#3b82f6; --mint:#34d399; --amber:#fbbf24; --rose:#f87171;
+  --mono:Consolas,"Cascadia Code","Courier New",monospace;
+  --sans:"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--navy-1);color:var(--ink);font-family:var(--sans);line-height:1.75;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(59,130,246,.13), transparent),
+    repeating-linear-gradient(0deg, transparent 0 79px, rgba(96,165,250,.045) 79px 80px),
+    repeating-linear-gradient(90deg, transparent 0 79px, rgba(96,165,250,.045) 79px 80px);
+}
+::selection{background:rgba(96,165,250,.35)}
+a{color:var(--sky);text-decoration:none}
+.wrap{max-width:1060px;margin:0 auto;padding:0 28px 120px}
+
+/* ── 航道导航 ─────────────────────── */
+nav{position:sticky;top:0;z-index:9;background:rgba(10,17,32,.88);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;gap:22px;padding-top:14px;padding-bottom:14px}
+nav .brand{font-weight:700;letter-spacing:.5px;white-space:nowrap}
+nav .brand .anchor{color:var(--sky);margin-right:8px}
+nav .links{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
+nav a{font-size:13px;color:var(--ink-dim);padding:5px 11px;border-radius:99px;border:1px solid transparent}
+nav a:hover{color:var(--ink);border-color:var(--line);background:var(--navy-2)}
+
+/* ── 章节结构 ─────────────────────── */
+section{margin-top:88px;position:relative}
+.secno{font-family:var(--mono);font-size:12px;color:var(--sky);letter-spacing:3px}
+h2{font-size:27px;margin:6px 0 10px;letter-spacing:1px}
+h2::after{content:"";display:block;width:56px;height:3px;margin-top:12px;
+  background:repeating-linear-gradient(90deg,var(--sky-deep) 0 14px,transparent 14px 20px)}
+h3{font-size:17px;margin:30px 0 10px;color:var(--ink)}
+h3::before{content:"◈ ";color:var(--sky);font-size:14px}
+p{color:var(--ink-dim);margin:10px 0}
+p strong,li strong{color:var(--ink)}
+ul,ol{margin:10px 0 10px 22px;color:var(--ink-dim)}
+li{margin:7px 0}
+code{font-family:var(--mono);font-size:.9em;background:var(--navy-0);border:1px solid var(--line);
+  padding:2px 7px;border-radius:5px;color:var(--mint);word-break:break-all}
+
+/* ── 压印卡 / 提示框 ─────────────── */
+.card{background:var(--navy-2);border:1px solid var(--line);border-radius:14px;padding:22px 26px;margin:18px 0;
+  box-shadow:0 14px 34px rgba(2,6,16,.4)}
+.callout{border-radius:12px;padding:16px 20px;margin:18px 0;font-size:14.5px;border:1px solid}
+.callout b{display:block;margin-bottom:4px}
+.callout.ok{background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.35)}
+.callout.warn{background:rgba(251,191,36,.07);border-color:rgba(251,191,36,.35)}
+.callout.danger{background:rgba(248,113,113,.08);border-color:rgba(248,113,113,.4)}
+.callout p{margin:4px 0}
+
+/* ── 表格 ─────────────────────── */
+table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14.5px}
+th{font-family:var(--mono);font-size:12px;letter-spacing:2px;color:var(--ink-faint);text-align:left;
+  padding:9px 14px;border-bottom:2px solid var(--line)}
+td{padding:11px 14px;border-bottom:1px solid var(--line);color:var(--ink-dim);vertical-align:top}
+td:first-child{color:var(--ink);white-space:nowrap}
+.pill{font-family:var(--mono);font-size:11.5px;padding:2px 10px;border-radius:99px;white-space:nowrap}
+.pill.g{background:rgba(52,211,153,.14);color:var(--mint)}
+.pill.b{background:rgba(96,165,250,.14);color:var(--sky)}
+.pill.a{background:rgba(251,191,36,.14);color:var(--amber)}
+.pill.r{background:rgba(248,113,113,.14);color:var(--rose)}
+
+/* ── 流程图（航线） ─────────────── */
+.lane{display:flex;flex-direction:column;gap:0;margin:22px 0}
+.hop{display:flex;align-items:center;gap:16px}
+.hop .node{background:var(--navy-0);border:1px solid var(--line);border-radius:10px;padding:11px 18px;
+  font-size:14px;color:var(--ink);min-width:210px}
+.hop .node small{display:block;font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);letter-spacing:1px}
+.hop .tag{font-family:var(--mono);font-size:11px;color:var(--sky);white-space:nowrap}
+.wake{width:2px;height:26px;margin-left:24px;
+  background:repeating-linear-gradient(180deg,var(--sky-deep) 0 6px,transparent 6px 12px);opacity:.55}
+
+/* ── 步骤 ─────────────────────── */
+.steps{counter-reset:s;margin:18px 0}
+.steps>div{position:relative;padding:0 0 22px 58px;border-left:2px dashed var(--line);margin-left:18px}
+.steps>div:last-child{border-left-color:transparent;padding-bottom:0}
+.steps>div::before{counter-increment:s;content:counter(s,decimal-leading-zero);
+  position:absolute;left:-19px;top:0;width:36px;height:36px;border-radius:50%;
+  background:var(--navy-0);border:2px solid var(--sky-deep);color:var(--sky);
+  font-family:var(--mono);font-size:13px;display:flex;align-items:center;justify-content:center}
+.steps b{color:var(--ink)}
+
+/* ── 页首 ─────────────────────── */
+header.hero{padding:96px 0 10px}
+.hero .mark{font-family:var(--mono);letter-spacing:6px;font-size:12px;color:var(--sky)}
+.hero h1{font-size:52px;letter-spacing:2px;margin:14px 0 4px}
+.hero h1 span{color:var(--sky)}
+.hero .sub{font-size:17px;color:var(--ink-dim);max-width:640px;margin-top:14px}
+.hero .chips{display:flex;gap:10px;margin-top:26px;flex-wrap:wrap}
+footer{margin-top:110px;border-top:1px solid var(--line);padding-top:26px;
+  font-family:var(--mono);font-size:12px;color:var(--ink-faint);letter-spacing:1px}
+@media (max-width:640px){.hero h1{font-size:36px} nav .links{display:none}}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <span class="brand"><span class="anchor">⚓</span>TunnelDock 隧道坞</span>
+  <span class="links">
+    <a href="#quick">快速上手</a><a href="#ui">界面导览</a><a href="#domain">固定域名</a>
+    <a href="#token">令牌引导</a><a href="#security">安全</a><a href="#trouble">排障</a><a href="#data">数据</a>
+  </span>
+</div></nav>
+
+<div class="wrap">
+
+<header class="hero">
+  <div class="mark">HARBOR MANUAL · REV 0.3</div>
+  <h1>把内网服务<span>安全地</span>开到公网</h1>
+  <p class="sub">三步发布，一个 PIN 守门。基于 Cloudflare Tunnel——不需要公网 IP、不需要端口映射，
+  运营商大内网照样用。HTTP 与 WebSocket 全透传。</p>
+  <div class="chips">
+    <span class="pill b">v0.3.2</span><span class="pill g">Windows 10/11</span>
+    <span class="pill b">免费可用</span><span class="pill g">断线自愈</span><span class="pill a">闭源勿外传</span>
+  </div>
+</header>
+
+<!-- 01 快速上手 -->
+<section id="quick">
+  <div class="secno">SECTION 01</div>
+  <h2>快速上手</h2>
+  <p>双击安装包（内置 cloudflared，无任何前置依赖）后，从桌面快捷方式或托盘图标打开 TunnelDock。SmartScreen 提示「未知发布者」时点<strong>更多信息 → 仍要运行</strong>。</p>
+  <div class="steps">
+    <div><b>新建发布</b>：点右上角「＋ 新建发布」，填服务名称、目标地址（一般是 <code>127.0.0.1</code>）、端口。访问口令留空会自动生成 8 位 PIN。</div>
+    <div><b>启动</b>：卡片上点「启动」。首次建立隧道约 10–30 秒，状态徽章变绿后卡片上出现公网地址与二维码。</div>
+    <div><b>手机访问</b>：扫码（或输入地址）→ 出现 TunnelDock 登录墙 → 输入 PIN → 进入你的服务。会话 12 小时内免重复输入。</div>
+  </div>
+  <div class="lane">
+    <div class="hop"><div class="node">手机浏览器<small>CLIENT</small></div><span class="tag">HTTPS</span></div>
+    <div class="wake"></div>
+    <div class="hop"><div class="node">Cloudflare 边缘节点<small>EDGE · 全球就近</small></div><span class="tag">TUNNEL</span></div>
+    <div class="wake"></div>
+    <div class="hop"><div class="node">电脑上的 cloudflared<small>出站长连接 · 无需公网 IP</small></div><span class="tag">LOOPBACK</span></div>
+    <div class="wake"></div>
+    <div class="hop"><div class="node">TunnelDock 网关<small>PIN 口令墙 · 限速 · WS 透传</small></div><span class="tag">FORWARD</span></div>
+    <div class="wake"></div>
+    <div class="hop"><div class="node">你的服务<small>127.0.0.1 : 端口</small></div></div>
+  </div>
+  <div class="callout ok"><b>默认就有三重保护</b>
+    <p>① 每个发布独立的 PIN 口令墙（HttpOnly Cookie + 常量时间比较）；② 登录失败限速（同 IP 5 次错误封 60 秒）；③ WebSocket 握手同样要过墙。</p>
+  </div>
+</section>
+
+<!-- 02 界面导览 -->
+<section id="ui">
+  <div class="secno">SECTION 02</div>
+  <h2>界面导览</h2>
+  <table>
+    <tr><th>元素</th><th>作用</th></tr>
+    <tr><td>状态徽章</td><td><span class="pill g">公网在线</span> <span class="pill a">发布中…</span> <span class="pill r">出错</span> <span class="pill b">未启动</span>；重连时显示「重连中（第 N 次）」</td></tr>
+    <tr><td>复制 / 二维码</td><td>获取当前公网地址；二维码弹窗里同时展示 PIN</td></tr>
+    <tr><td>改口令 / 重置8位PIN</td><td>自定义口令（6–32 位）或重新随机一个 8 位 PIN；改后需重新启动发布</td></tr>
+    <tr><td>设域名</td><td>绑定固定域名（见第 03 节），地址永久不变</td></tr>
+    <tr><td>令牌引导</td><td>服务自带 <code>?token=</code> 门禁时用（见第 04 节）</td></tr>
+    <tr><td>自启开关</td><td>TunnelDock 启动时是否自动恢复该发布（默认开）</td></tr>
+    <tr><td>开机自启并恢复发布</td><td>顶栏总开关：Windows 登录时静默启动 TunnelDock 并恢复所有「自启」的发布</td></tr>
+    <tr><td>托盘</td><td>关闭窗口 = 隐藏到托盘（服务不断）；双击图标唤起；右键可退出</td></tr>
+  </table>
+  <div class="callout ok"><b>自动自愈，不必盯着</b>
+    <p>隧道断线按 5s/15s/60s 退避重连；QUIC（UDP）被网络掐断时自动降级 http2（TCP）并记住偏好；网关进程异常会自动重建。恢复后地址若变化（临时地址模式）会弹系统通知提醒重新扫码。</p>
+  </div>
+</section>
+
+<!-- 03 固定域名 -->
+<section id="domain">
+  <div class="secno">SECTION 03</div>
+  <h2>固定域名（推荐长期使用）</h2>
+  <p>默认的免费临时地址每次重启都会换。绑定自己的域名后地址<strong>永久固定</strong>，手机可收藏；自有域名也不受随机子域 DNS 抽风之苦。</p>
+  <div class="steps">
+    <div><b>准备</b>：一个 Cloudflare 账号 + 一个托管在 Cloudflare 的域名（在其控制台购买，<code>.top</code>/<code>.xyz</code> 年费十几元）。</div>
+    <div><b>一次性授权</b>：PowerShell 运行
+      <code>& "$env:LOCALAPPDATA\Programs\tunneldock\resources\cloudflared.exe" tunnel login</code>，
+      自动弹浏览器 → 登录 → 选中域名 → Authorize。</div>
+    <div><b>绑定</b>：服务卡片「设域名」→ 填子域名（如 <code>nas.你的域名.top</code>）→ 保存 → 启动。</div>
+  </div>
+  <div class="callout warn"><b>cert.pem 是钥匙</b>
+    <p>授权生成的 <code>C:\Users\你\.cloudflared\cert.pem</code> 等于你账号里该域名的管理权——不要发给任何人、不要上传。泄露即换：Cloudflare 控制台删除可疑隧道即可止损。</p>
+  </div>
+  <p>详细图文步骤见分享包内《同事指南-固定域名.md》。</p>
+</section>
+
+<!-- 04 令牌引导 -->
+<section id="token">
+  <div class="secno">SECTION 04</div>
+  <h2>令牌引导（服务自带门禁时）</h2>
+  <p>有些服务（典型如 <strong>dsh web</strong>）要求首次访问必须在地址栏带一次性 <code>?token=</code>，否则返回
+  <code>401 authentication required</code>。这类服务在卡片上点「<strong>令牌引导</strong>」，填入<strong>打印该令牌的日志文件路径</strong>即可：</p>
+  <ul>
+    <li>dsh（pm2 托管）：<code>C:\Users\你\.pm2\logs\dsh-web-out.log</code></li>
+    <li>其他服务：它控制台/日志里出现 <code>?token=xxxx</code> 的那个文件</li>
+  </ul>
+  <p>原理：网关收到服务 401 时自动读取该文件里最新一条 token 替你带上，令牌轮换也自动跟上。服务自带账号密码体系的（如 pi-web 的 Basic 认证），直接输它的账号密码即可，无需此功能。</p>
+</section>
+
+<!-- 05 安全 -->
+<section id="security">
+  <div class="secno">SECTION 05</div>
+  <h2>安全须知</h2>
+  <div class="callout danger"><b>公网地址 = 任何人可达</b>
+    <p>唯一屏障是 PIN 口令墙。请务必使用 8 位以上口令（卡片「改口令」），不要发布你不愿意暴露的服务；Web 终端、管理后台类服务建议叠加自身账号体系。不用时点「停止」，公网入口立即关闭。</p>
+  </div>
+  <ul>
+    <li>登录失败限速已内置（同 IP 5 次/分钟），但仍建议强口令；</li>
+    <li>免费临时地址（Quick Tunnel）无可用性保证，正式场景请绑固定域名；</li>
+    <li>所有凭据（PIN、cert.pem、隧道凭据）只存在你本机，分享安装包不含任何个人信息。</li>
+  </ul>
+</section>
+
+<!-- 06 排障 -->
+<section id="trouble">
+  <div class="secno">SECTION 06</div>
+  <h2>排障手册</h2>
+  <table>
+    <tr><th>症状</th><th>原因与解法</th></tr>
+    <tr><td>502 Bad Gateway</td><td>目标服务没启动或地址不对（带 <code>http://</code> 会自动清洗）。在电脑浏览器直访 <code>http://目标:端口</code> 验证服务本身。</td></tr>
+    <tr><td>页面 401 / authentication required</td><td>服务自身的门禁：token 类 → 第 04 节令牌引导；账号类 → 输它的账号密码。</td></tr>
+    <tr><td>手机「找不到服务器」</td><td>运营商 DNS 对随机子域抽风。手机浏览器开 DoH（Firefox：设置→隐私与安全→DNS over HTTPS）；或 Android「私人 DNS」填 <code>1dot1dot1dot1.cloudflare-dns.com</code>；根治=绑固定域名。</td></tr>
+    <tr><td>微信能开，QQ/系统浏览器不行</td><td>微信内核自带 HTTPDNS 绕开了运营商 DNS。给手机设「私人 DNS」（同上）系统级解决；仍慢则 APN 协议改 IPv4。</td></tr>
+    <tr><td>换网络后全部打不开</td><td>多为 IPv6 陷阱：DNS 返回 AAAA 优先而 v6 路由不通。诊断口诀：<code>curl -4</code> 通 + <code>curl -6</code> 挂 = IPv6 的锅；解法=关 zone 的 IPv6 Compatibility（免费版需 API）或手机 APN 改 IPv4。</td></tr>
+    <tr><td>一直「重连中」</td><td>网络掐了 UDP（QUIC）。0.3.2 起第二次重连自动降级 http2（TCP），等它自愈即可；急的话停用再启动。</td></tr>
+    <tr><td>页面开了但某插件 import failed</td><td>「大插件 × 慢网络」：几 MB 的插件在慢隧道上加载超时。换好网络加载一次（成功后进浏览器缓存）；或禁用该插件。</td></tr>
+  </table>
+</section>
+
+<!-- 07 数据 -->
+<section id="data">
+  <div class="secno">SECTION 07</div>
+  <h2>数据位置与卸载</h2>
+  <table>
+    <tr><th>内容</th><th>位置</th></tr>
+    <tr><td>服务配置 / PIN</td><td><code>%APPDATA%\TunnelDock\data\services.json</code></td></tr>
+    <tr><td>命名隧道配置</td><td><code>%APPDATA%\TunnelDock\data\tunnels\</code></td></tr>
+    <tr><td>Cloudflare 授权 / 隧道凭据</td><td><code>%USERPROFILE%\.cloudflared\</code>（含 cert.pem，敏感）</td></tr>
+    <tr><td>卸载</td><td>控制面板，或安装目录下 <code>Uninstall TunnelDock.exe</code>；卸载不影响上述数据</td></tr>
+  </table>
+  <footer>⚓ TUNNELDOCK · INTERNAL WATERS ONLY · 帆不要超过风，口令不要短于八位</footer>
+</section>
+
+</div>
+</body>
+</html>

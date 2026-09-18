@@ -12,6 +12,7 @@ Windows 桌面应用（Electron + TypeScript + Vue 3），托盘常驻，闭源�
 - **默认安全**：每个发布独立 PIN 口令墙 + 登录失败限速 + 常量时间比较；WebSocket 全透传
 - **令牌引导**：服务自身要求 `?token=` 首访的（如 dsh web），「令牌引导」填其日志路径即自动通过
 - **生命周期**：断线自动重连（指数退避）、网关崩溃自动重建、开机自启并恢复全部发布（`--hidden` 静默）
+- **协议自愈**：QUIC（UDP）被网络掐断时自动降级 http2（TCP），成功一次后记住偏好——恶劣网络（如移动宽带）下隧道仍可用
 - 上游转发自动剥离 Origin/Referer/Sec-Fetch-Site 并重写 Host——兼容带 Host/Origin 围栏的服务
 
 ## 使用速览
@@ -46,6 +47,24 @@ Windows 桌面应用（Electron + TypeScript + Vue 3），托盘常驻，闭源�
 浏览器优先试 v6 → 毫秒级失败，看起来像"全挂"（实测 `curl -6` 全败、`curl -4` 全通）。
 根治：Cloudflare 控制台 → 域名 → Network → **关闭 IPv6 Compatibility**（只返回 A 记录，全端生效）。
 排查口诀：`curl -4` 通 + `curl -6` 挂 + 本机无全局 IPv6 = 关 zone 的 IPv6。
+注意：免费版该开关在 UI 里是灰的（Enterprise 专属），可用 API `PATCH /zones/:id/settings/ipv6 {"value":"off"}` 尝试。
+
+**同一手机：微信扫码能进，QQ/系统浏览器不行**
+
+微信内核（XWeb）自带腾讯 HTTPDNS，绕开了运营商 DNS；其他浏览器走运营商 DNS + IPv6 优先，
+踩中上面两个坑。解法：手机「设置 → 网络 → 私人 DNS」填 `1dot1dot1dot1.cloudflare-dns.com`
+（系统级一次生效，所有应用受益）；仍慢则是 IPv6 的锅 → APN 协议改 IPv4。
+
+**隧道时通时断 / 重连循环（日志满屏 failed to dial to edge with quic）**
+
+网络掐了 UDP（QUIC）。0.3.2 起自动降级：第二次重连走 http2（TCP）并记住偏好，无需人工干预。
+手动验证方法：`cloudflared tunnel --config <yml> --protocol http2 run`，4 连接秒注册即为此因。
+
+**页面开了但某插件 import failed（如 dsh 的 documentpreview）**
+
+先验证链路：同 URL 直连与走网关对比（字节级一致 = 隧道无罪）。多为「大插件 × 慢网络」——
+该插件内嵌 PDF.js 达 6.9MB，慢隧道上浏览器导入超时。解法：换好网络加载一次（rev 参数是缓存键，
+成功后进浏览器缓存）；或禁用不需要的大插件。
 
 **502 Bad Gateway**：多为目标服务没启动或地址不对（带 `http://` 会自动清洗）；
 在电脑浏览器直接访问 `http://目标地址:端口` 排查服务本身。
