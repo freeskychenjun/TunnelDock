@@ -39,15 +39,19 @@ const URL_RE = /https:\/\/[a-z0-9]+(?:-[a-z0-9]+){2,}\.trycloudflare\.com/
 export function startTunnel(
   proxyPort: number,
   timeoutMs = 60000,
-  onLog?: (line: string) => void
+  onLog?: (line: string) => void,
+  forceHttp2 = false
 ): Promise<TunnelHandle> {
   const exe = locateCloudflared()
   if (!exe) {
     return Promise.reject(new Error('未找到 cloudflared（可设置环境变量 TUNNELDOCK_CLOUDFLARED 指定路径）'))
   }
-  onLog?.(`启动 cloudflared: ${exe} -> 127.0.0.1:${proxyPort}`)
+  onLog?.(`启动 cloudflared: ${exe} -> 127.0.0.1:${proxyPort}${forceHttp2 ? '（http2/TCP）' : ''}`)
   return new Promise<TunnelHandle>((resolve, reject) => {
-    const child = spawn(exe, ['tunnel', '--url', `http://127.0.0.1:${proxyPort}`, '--no-autoupdate'], {
+    const args = ['tunnel']
+    if (forceHttp2) args.push('--protocol', 'http2') // UDP/QUIC 被网络掐死时走纯 TCP
+    args.push('--url', `http://127.0.0.1:${proxyPort}`, '--no-autoupdate')
+    const child = spawn(exe, args, {
       windowsHide: true
     })
     let buf = ''
@@ -172,6 +176,7 @@ export function startNamedTunnel(opts: {
   serviceId: string
   onLog?: (line: string) => void
   timeoutMs?: number
+  forceHttp2?: boolean
 }): Promise<TunnelHandle> {
   const exe = locateCloudflared()
   if (!exe) return Promise.reject(new Error('未找到 cloudflared'))
@@ -198,7 +203,10 @@ export function startNamedTunnel(opts: {
     'utf8'
   )
   return new Promise<TunnelHandle>((resolve, reject) => {
-    const child = spawn(exe, ['tunnel', '--config', cfgFile, 'run'], { windowsHide: true })
+    const runArgs = ['tunnel', '--config', cfgFile]
+    if (opts.forceHttp2) runArgs.push('--protocol', 'http2')
+    runArgs.push('run')
+    const child = spawn(exe, runArgs, { windowsHide: true })
     let settled = false
     const timer = setTimeout(() => {
       if (settled) return

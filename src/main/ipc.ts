@@ -27,6 +27,9 @@ interface Runtime {
 
 const runtimes = new Map<string, Runtime>()
 const BACKOFF_MS = [5000, 15000, 60000] // 退避表；超过次数转 error
+// QUIC（UDP）被网络掐断的环境下自动降级 http2（TCP）：
+// 首次失败后的重连即切 http2；一旦某服务用 http2 成功过，后续（含手动重启）直接用 http2
+const http2Prefs = new Set<string>()
 
 function rt(id: string): Runtime {
   let r = runtimes.get(id)
@@ -115,6 +118,8 @@ async function startService(id: string, isReconnect = false): Promise<ServiceSta
       })
 
       // 2) 隧道：有域名走命名隧道（固定地址），否则免费临时地址
+      // QUIC 失败后的重连、或本服务曾用 http2 成功过 → 强制 http2（TCP）
+      const forceHttp2 = http2Prefs.has(svc.id) || (isReconnect && r.attempts >= 1)
       const cfLog = (line: string): void => console.log(`[cf:${svc.name}] ${line}`)
       const t = svc.hostname
         ? await startNamedTunnel({
@@ -122,9 +127,10 @@ async function startService(id: string, isReconnect = false): Promise<ServiceSta
             hostname: svc.hostname,
             proxyPort: gw.port,
             serviceId: svc.id,
-            onLog: cfLog
+            onLog: cfLog,
+            forceHttp2
           })
-        : await startTunnel(gw.port, 60000, cfLog)
+        : await startTunnel(gw.port, 60000, cfLog, forceHttp2)
       r.tunnelChild = t.child
       t.child.on('exit', () => {
         const cur = rt(id)
@@ -137,6 +143,7 @@ async function startService(id: string, isReconnect = false): Promise<ServiceSta
 
       const wasReconnect = r.attempts > 0
       r.attempts = 0
+      if (forceHttp2) http2Prefs.add(svc.id) // 记住：这个网络环境下 http2 才通
       setStatus(id, { status: 'ready', url: t.url, error: null, attempt: 0 })
       if (wasReconnect || isReconnect) {
         console.log(`E2E_URL2=${t.url}`) // E2E 重连观测点
