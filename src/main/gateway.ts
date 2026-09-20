@@ -21,6 +21,7 @@ export interface GatewayConfig {
   targetPort: number
   pin: string
   serviceName: string
+  tokenSource: string // 令牌引导源文件（proxy.cjs 读 cfg.tokenSource）；空 = 不启用
 }
 
 export function startGateway(cfg: GatewayConfig, onLog?: (level: string, msg: string) => void): Promise<GatewayHandle> {

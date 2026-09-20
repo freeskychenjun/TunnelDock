@@ -9,11 +9,14 @@ const qr = ref<{ url: string; name: string; pin: string; dataUrl: string } | nul
 const pinEdit = ref<{ id: string; name: string; value: string } | null>(null)
 const hostEdit = ref<{ id: string; name: string; value: string } | null>(null)
 const tokenEdit = ref<{ id: string; name: string; value: string } | null>(null)
-const form = ref({ name: '', host: '127.0.0.1', port: '', pin: '', hostname: '' })
+const rmConfirm = ref<{ id: string; name: string; hostname: string } | null>(null)
+const purgeCloud = ref(true)
+const form = ref({ name: '', host: '127.0.0.1', port: '', pin: '' })
 const busy = ref(false)
 const toast = ref('')
 const appAutostart = ref(false)
 const hasCert = ref(false)
+const appInfo = ref<AppInfo | null>(null)
 
 function showToast(msg: string): void {
   toast.value = msg
@@ -34,6 +37,7 @@ async function refresh(): Promise<void> {
 
 onMounted(async () => {
   void refresh()
+  appInfo.value = await window.tunneldock.appInfo()
   appAutostart.value = await window.tunneldock.getAppAutostart()
   hasCert.value = await window.tunneldock.hasOriginCert()
   window.tunneldock.onEvent((st) => {
@@ -54,11 +58,6 @@ async function createService(): Promise<void> {
     showToast('自定义口令需 6-32 位（字母/数字/@#$%^&*-）')
     return
   }
-  const hostname = form.value.hostname.trim().toLowerCase()
-  if (hostname && !hasCert.value) {
-    showToast('固定域名需先完成 Cloudflare 授权（联系开发者运行 tunnel login）')
-    return
-  }
   busy.value = true
   try {
     await window.tunneldock.create({
@@ -68,7 +67,7 @@ async function createService(): Promise<void> {
       pin: pin || undefined
     })
     showCreate.value = false
-    form.value = { name: '', host: '127.0.0.1', port: '', pin: '', hostname: '' }
+    form.value = { name: '', host: '127.0.0.1', port: '', pin: '' }
     await refresh()
     showToast('已创建，点「启动」发布到公网')
   } catch (e) {
@@ -111,13 +110,40 @@ async function start(id: string): Promise<void> {
 }
 
 async function stop(id: string): Promise<void> {
-  await window.tunneldock.stop(id)
-  showToast('已停止，公网入口关闭')
+  try {
+    await window.tunneldock.stop(id)
+    showToast('已停止，公网入口关闭')
+  } catch (e) {
+    showToast(`停止失败：${(e as Error).message}`)
+  }
 }
 
-async function removeSvc(id: string): Promise<void> {
-  await window.tunneldock.remove(id)
-  await refresh()
+function askRemove(svc: ServiceConfig): void {
+  if (svc.hostname) {
+    // 固定域名的服务删前确认，可选连云端隧道一起删
+    purgeCloud.value = true
+    rmConfirm.value = { id: svc.id, name: svc.name, hostname: svc.hostname }
+    return
+  }
+  void doRemove(svc.id, false)
+}
+
+async function doRemove(id: string, purge: boolean): Promise<void> {
+  try {
+    const r = await window.tunneldock.remove(id, purge)
+    if (!r.removed) {
+      showToast('删除失败：服务不存在')
+      return
+    }
+    if (purge && r.cloudError) showToast(`本地已删；云端隧道删除失败：${r.cloudError}`)
+    else if (purge && r.cloudPurged) showToast('已删除（含 Cloudflare 隧道）')
+    else showToast('已删除')
+  } catch (e) {
+    showToast((e as Error).message)
+  } finally {
+    rmConfirm.value = null
+    await refresh()
+  }
 }
 
 async function resetPin(id: string): Promise<void> {
@@ -139,13 +165,21 @@ async function savePin(): Promise<void> {
 }
 
 async function toggleAutoStart(svc: ServiceConfig): Promise<void> {
-  await window.tunneldock.setAutoStart(svc.id, !svc.autoStart)
+  try {
+    await window.tunneldock.setAutoStart(svc.id, !svc.autoStart)
+  } catch (e) {
+    showToast((e as Error).message)
+  }
   await refresh()
 }
 
 async function toggleAppAutostart(): Promise<void> {
-  appAutostart.value = await window.tunneldock.setAppAutostart(!appAutostart.value)
-  showToast(appAutostart.value ? 'TunnelDock 将随开机静默启动并恢复发布' : '已关闭开机自启')
+  try {
+    appAutostart.value = await window.tunneldock.setAppAutostart(!appAutostart.value)
+    showToast(appAutostart.value ? 'TunnelDock 将随开机静默启动并恢复发布' : '已关闭开机自启')
+  } catch (e) {
+    showToast((e as Error).message)
+  }
 }
 
 async function showQr(svc: ServiceConfig): Promise<void> {
@@ -174,7 +208,7 @@ const STATUS_TEXT: Record<string, string> = {
     <header class="topbar">
       <span class="logo">⚓</span>
       <span class="title">TunnelDock <small>隧道坞</small></span>
-      <span class="ver">v0.2.0 · M2</span>
+      <span class="ver">v{{ appInfo?.version || '' }}</span>
     </header>
 
     <main class="body">
@@ -227,7 +261,7 @@ const STATUS_TEXT: Record<string, string> = {
           </label>
           <button v-if="['idle', 'error'].includes(stateOf(svc.id).status)" class="mini run" @click="start(svc.id)">启动</button>
           <button v-else-if="stateOf(svc.id).status === 'ready'" class="mini stop" @click="stop(svc.id)">停止</button>
-          <button class="mini danger" @click="removeSvc(svc.id)">删除</button>
+          <button class="mini danger" @click="askRemove(svc)">删除</button>
         </div>
       </div>
     </main>
@@ -303,6 +337,23 @@ const STATUS_TEXT: Record<string, string> = {
         <div class="actions">
           <button class="mini" @click="copy(qr.url, '地址')">复制地址</button>
           <button class="primary" @click="qr = null">完成</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 删除确认（带固定域名的服务可选连云端隧道一起删） -->
+    <div v-if="rmConfirm" class="mask" @click.self="rmConfirm = null">
+      <div class="modal">
+        <h3>删除发布 · {{ rmConfirm.name }}</h3>
+        <p class="hintbox">将停止服务并删除本地配置（含口令与域名绑定），不可恢复。</p>
+        <label class="switcher" style="margin-top: 12px">
+          <input type="checkbox" v-model="purgeCloud" />
+          同时删除 Cloudflare 上的隧道（{{ rmConfirm.hostname }}）
+        </label>
+        <p class="hintbox">DNS 记录会残留；之后重新绑定同一域名时会自动覆盖，无需手动清理。</p>
+        <div class="actions">
+          <button class="mini" @click="rmConfirm = null">取消</button>
+          <button class="mini danger" @click="doRemove(rmConfirm.id, purgeCloud)">删除</button>
         </div>
       </div>
     </div>
