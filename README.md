@@ -80,7 +80,8 @@ git clone https://github.com/freeskychenjun/TunnelDock.git
 npm install       # 已配置 npmmirror 镜像（.npmrc）
 npm run dev       # 开发模式（热更新）
 npm run build     # 构建 out/
-npm run typecheck # tsc --noEmit
+npm run typecheck # tsc（主进程/preload）+ vue-tsc（渲染层）
+npm run unit      # 单元测试（node:test：登录墙/限速/透传/WS + 纯函数）
 npm run smoke     # 构建后自动冒烟：起窗口 1.5s 自动退出，exit 0 = 通过
 npm run e2e       # 全链路 E2E（demo→发布→模拟手机→WS→限速→断线重连）
 ```
@@ -108,6 +109,11 @@ $env:NODE_OPTIONS = ''
 ```
 
 （在自己的终端里跑不受影响。）
+
+## 许可
+
+[MIT](LICENSE)。cloudflared 二进制（52MB，不入库）遵循 Cloudflare 自身的许可，
+安装包通过 `npm run prep` 从本机复制内置。
 
 ## 环境事实
 

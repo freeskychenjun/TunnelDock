@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: 类型检查（tsc + vue-tsc）
+        run: npm run typecheck
+
+      - name: 单元测试（node:test）
+        run: npm run unit
+
+      - name: 构建
+        run: npm run build
+
+      - name: 冒烟（窗口 1.5s 自动退出，exit 0 = 通过）
+        run: npm run smoke
+
+      - name: 红线扫描（禁止二进制 / 密钥 / 日志 / 环境文件入库）
+        shell: bash
+        run: |
+          bad=$(git ls-files | grep -Ei '\.(exe|dll|pem|key|log|env)$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::违规文件入库：${bad}"
+            exit 1
+          fi
+
+  # 全链路 E2E：依赖真实 Cloudflare 隧道，仅手动触发（Actions 页 → Run workflow）
+  e2e:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: 下载 cloudflared（CI 在 GitHub 内网，官方 Releases 直下很快）
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force bin | Out-Null
+          Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile bin/cloudflared.exe
+
+      - name: 全链路 E2E（demo→发布→模拟手机→WS→限速→断线重连）
+        run: npm run e2e
+        env:
+          TUNNELDOCK_CLOUDFLARED: ${{ github.workspace }}\bin\cloudflared.exe
