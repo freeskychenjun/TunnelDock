@@ -126,6 +126,11 @@ Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 Stop-Process -Id $demo.Id -Force -ErrorAction SilentlyContinue
 Invoke-Cleanup
+# 数据也要清：publishDemo 会把 e2e-demo 写进本机 services.json，不清的话
+# 下次正常启动 TunnelDock 会对着 4590 端口（已无服务）白跑一轮重连
+foreach ($ud in @("$env:APPDATA\TunnelDock", "$env:APPDATA\tunneldock")) {
+  if (Test-Path "$ud\data\services.json") { Remove-Item "$ud\data\services.json" -Force }
+}
 
 $pass = ($a.Code -eq 200) -and ($b.Code -eq 303) -and ($c.Code -eq 200) -and ($wsLine -match '101') -and ($last -eq 429) -and $reconnectOk
 ""
