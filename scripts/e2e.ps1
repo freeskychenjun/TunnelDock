@@ -8,21 +8,32 @@ $env:NODE_OPTIONS = ''
 $proj = Split-Path -Parent $PSScriptRoot
 Set-Location $proj
 
+# 数据隔离：开发实例走独立 userData（src/main/index.ts 识别此环境变量）。
+# Windows 大小写不敏感，%APPDATA%\TunnelDock 与 \tunneldock 是同一目录——
+# 不隔离的话 e2e 会和安装版共用 services.json，曾把安装版唯一一份配置删掉。
+$env:TUNNELDOCK_USER_DATA = Join-Path $env:TEMP 'td-e2e-userdata'
+
+# 只杀父进程已死的 cloudflared（上次 e2e 异常退出的残留）。
+# 正在被其他实例持有的（父进程活着）绝不能动——无差别 Get-Process cloudflared 曾误杀安装版的线上隧道。
+function Invoke-KillOrphanCloudflared {
+  Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { -not (Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue) } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
 # 任何失败路径都要清干净（否则残留 electron/cloudflared 会卡住后续运行）
 function Invoke-Cleanup {
-  Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Invoke-KillOrphanCloudflared
   Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*tunneldock*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   Get-NetTCPConnection -State Listen -LocalPort 4590 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
 }
 trap { Invoke-Cleanup; "❌ E2E 失败：$($_.Exception.Message)"; exit 1 }
 
 "=== 0) 清残留（上次运行的进程 / 数据） ==="
-Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Invoke-KillOrphanCloudflared
 Get-CimInstance Win32_Process -Filter "Name='electron.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*tunneldock*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-foreach ($ud in @("$env:APPDATA\TunnelDock", "$env:APPDATA\tunneldock")) {
-  if (Test-Path "$ud\data\services.json") { Remove-Item "$ud\data\services.json" -Force }
-}
-"已清理"
+if (Test-Path $env:TUNNELDOCK_USER_DATA) { Remove-Item $env:TUNNELDOCK_USER_DATA -Recurse -Force }
+"已清理（只动 e2e 自己的临时数据与孤儿进程，不碰安装版）"
 
 "=== 1) 构建 ==="
 # PS5.1 坑：EAP=Stop 时对原生命令用 2>&1 会把 stderr 警告升级成终止错误，这里只看退出码
@@ -104,8 +115,8 @@ for ($i = 1; $i -le 6; $i++) {
 }
 "[5] 第 6 次错误口令: HTTP $last （429 = 限速生效）"
 
-"=== 6) 断线自动重连（杀掉 cloudflared） ==="
-Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force
+"=== 6) 断线自动重连（只杀本实例名下的 cloudflared，不动其他实例） ==="
+Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" | Where-Object { $_.ParentProcessId -eq $app.Id } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 $url2 = $null
 for ($i = 0; $i -lt 75; $i++) {
   Start-Sleep -Seconds 2
@@ -126,11 +137,9 @@ Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 Stop-Process -Id $demo.Id -Force -ErrorAction SilentlyContinue
 Invoke-Cleanup
-# 数据也要清：publishDemo 会把 e2e-demo 写进本机 services.json，不清的话
-# 下次正常启动 TunnelDock 会对着 4590 端口（已无服务）白跑一轮重连
-foreach ($ud in @("$env:APPDATA\TunnelDock", "$env:APPDATA\tunneldock")) {
-  if (Test-Path "$ud\data\services.json") { Remove-Item "$ud\data\services.json" -Force }
-}
+# 数据也要清：publishDemo 会把 e2e-demo 写进独立 userData（见顶部 TUNNELDOCK_USER_DATA），
+# 不清的话下次 e2e 会对着 4590 端口（已无服务）白跑一轮重连
+if (Test-Path $env:TUNNELDOCK_USER_DATA) { Remove-Item $env:TUNNELDOCK_USER_DATA -Recurse -Force }
 
 $pass = ($a.Code -eq 200) -and ($b.Code -eq 303) -and ($c.Code -eq 200) -and ($wsLine -match '101') -and ($last -eq 429) -and $reconnectOk
 ""

@@ -190,8 +190,10 @@ export function tunnelsDir(): string {
 }
 
 /** 启动时清扫孤儿 cloudflared：上次异常退出可能留下带我们 ingress 配置的进程。
- *  只匹配「本实例 userData 下的配置路径」——安装版（Roaming\TunnelDock）与开发实例
- *  （Roaming\tunneldock）的 cloudflared 互不越界，绝不能把正在服务的其他实例杀了。 */
+ *  判定 = 命中本实例配置路径 **且** 父进程已死（Windows 无进程收养，父 PID 恒定不漂移）。
+ *  双条件缺一不可：开发实例与安装版可能共用同一 userData（Windows 大小写不敏感，
+ *  TunnelDock/tunneldock 是同一目录），仅凭路径匹配会误杀正在服务的其他实例；
+ *  仅凭父死判定则会误伤用户手动跑着的 cloudflared。 */
 export function sweepOrphanTunnels(): void {
   try {
     const marker = join(app.getPath('userData'), 'data', 'tunnels')
@@ -201,7 +203,7 @@ export function sweepOrphanTunnels(): void {
       [
         '-NoProfile',
         '-Command',
-        `$m = '${psMarker}'; $p = @(Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($m) }); $p.Count; $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`
+        `$m = '${psMarker}'; $p = @(Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($m) -and -not (Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue) }); $p.Count; $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`
       ],
       { encoding: 'utf8', timeout: 15000, windowsHide: true }
     )

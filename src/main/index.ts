@@ -16,6 +16,14 @@ const SMOKE = !app.isPackaged && process.argv.includes('--smoke')
 const HIDDEN = process.argv.includes('--hidden')
 const demoArg = !app.isPackaged ? process.argv.indexOf('--publish-demo') : -1
 
+// 开发/测试实例数据隔离：设 TUNNELDOCK_USER_DATA 后走独立 userData（e2e.ps1 会设置）。
+// Windows 文件系统大小写不敏感，%APPDATA%\TunnelDock 与 %APPDATA%\tunneldock 是同一目录——
+// 开发实例不隔离就会和安装版共用 services.json 互相覆盖、清扫时误杀对方隧道。
+// 仅开发期生效；安装版数据位置不受环境变量影响。
+if (process.env.TUNNELDOCK_USER_DATA && !app.isPackaged) {
+  app.setPath('userData', process.env.TUNNELDOCK_USER_DATA)
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1020,
