@@ -59,7 +59,9 @@ for ($i = 0; $i -lt 60; $i++) {
   Start-Sleep -Seconds 2
   if (Test-Path $appLog) {
     $t = Get-Content $appLog -Raw -ErrorAction SilentlyContinue
-    $u = [regex]::Match($t, 'E2E_URL=(https://[a-z0-9]+(-[a-z0-9]+){2,}\.trycloudflare\.com)').Groups[1].Value
+    # E2E_URL2 同样接受：首个随机域名可能因运营商 DNS 抽风探活失败，应用会自动
+    # 降级 http2 换域名重试——成功的地址打的是第二个标记（断线重连也用它，靠 URL 不同区分）
+    $u = [regex]::Match($t, 'E2E_URL(?:2)?=(https://[a-z0-9]+(-[a-z0-9]+){2,}\.trycloudflare\.com)').Groups[1].Value
     $p = [regex]::Match($t, 'E2E_PIN=(\S+)').Groups[1].Value
     if ($u) { $url = $u; $pin = $p; break }
     if ($t -match 'E2E_FAIL=') { throw "发布失败：$t" }
@@ -72,9 +74,17 @@ if (-not $url) { throw '90 秒内未拿到公网地址' }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $cc = New-Object System.Net.CookieContainer
 function Send($method, $uri, $body) {
-  $r = [System.Net.HttpWebRequest]::Create($uri); $r.Method = $method; $r.AllowAutoRedirect = $false; $r.CookieContainer = $cc; $r.Timeout = 25000
-  if ($body) { $r.ContentType = 'application/x-www-form-urlencoded'; $b = [Text.Encoding]::UTF8.GetBytes($body); $r.ContentLength = $b.Length; $s = $r.GetRequestStream(); $s.Write($b, 0, $b.Length); $s.Close() }
-  try { $resp = $r.GetResponse() } catch [System.Net.WebException] { $resp = $_.Exception.Response }
+  # 运营商 DNS 对 trycloudflare 随机子域抽风：偶发超时（WebException.Response 为 null）。
+  # 重试 3 次仍无响应则返回 Code=0，由末尾断言统一判失败，而不是在这里对 null 调方法崩掉
+  $resp = $null
+  for ($try = 1; $try -le 3; $try++) {
+    $r = [System.Net.HttpWebRequest]::Create($uri); $r.Method = $method; $r.AllowAutoRedirect = $false; $r.CookieContainer = $cc; $r.Timeout = 25000
+    if ($body) { $r.ContentType = 'application/x-www-form-urlencoded'; $b = [Text.Encoding]::UTF8.GetBytes($body); $r.ContentLength = $b.Length; $s = $r.GetRequestStream(); $s.Write($b, 0, $b.Length); $s.Close() }
+    try { $resp = $r.GetResponse() } catch [System.Net.WebException] { $resp = $_.Exception.Response }
+    if ($resp) { break }
+    if ($try -lt 3) { Start-Sleep -Seconds 5 }
+  }
+  if (-not $resp) { return @{ Code = 0; Body = '' } }
   $code = [int]$resp.StatusCode
   $sr = New-Object System.IO.StreamReader($resp.GetResponseStream()); $bd = $sr.ReadToEnd(); $sr.Close(); $resp.Close()
   @{ Code = $code; Body = $bd }
@@ -127,8 +137,9 @@ for ($i = 0; $i -lt 75; $i++) {
 if (-not $url2) { throw '杀掉 cloudflared 后 150 秒内未自动重连' }
 "[6] 自动重连成功，新地址: $url2"
 $r3 = [System.Net.HttpWebRequest]::Create($url2); $r3.AllowAutoRedirect = $false; $r3.Timeout = 20000
+$p3 = $null
 try { $p3 = $r3.GetResponse() } catch [System.Net.WebException] { $p3 = $_.Exception.Response }
-$code3 = [int]$p3.StatusCode; $p3.Close()
+if ($p3) { $code3 = [int]$p3.StatusCode; $p3.Close() } else { $code3 = 0 }
 "[6] 新地址未认证: HTTP $code3 （200 = 登录墙在线）"
 $reconnectOk = ($code3 -eq 200)
 
