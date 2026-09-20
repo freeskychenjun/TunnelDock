@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import { randomUUID } from 'crypto'
+import { QUICK_URL_RE } from './validate'
 
 export interface TunnelHandle {
   url: string
@@ -14,7 +15,7 @@ export interface TunnelHandle {
 const CANDIDATES = [
   process.env.TUNNELDOCK_CLOUDFLARED, // 用户/开发环境指定
   app.isPackaged ? join(process.resourcesPath, 'cloudflared.exe') : null, // 安装包内置
-  'C:\\Users\\Administrator\\.cloudflared\\cloudflared.exe', // 本机现成二进制（开发期）
+  join(process.env.USERPROFILE || '.', '.cloudflared', 'cloudflared.exe'), // 本机现成二进制（开发期）
   'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe'
 ].filter(Boolean) as string[]
 
@@ -32,9 +33,7 @@ export function locateCloudflared(): string | null {
   return null
 }
 
-// Quick Tunnel 主机名固定是多词形式（如 dominant-instruction-enb-lime）；
-// 单词的 api.trycloudflare.com 是 Cloudflare 自家 API 端点，会出现在日志里，必须排除
-const URL_RE = /https:\/\/[a-z0-9]+(?:-[a-z0-9]+){2,}\.trycloudflare\.com/
+// Quick Tunnel 地址正则见 ./validate（QUICK_URL_RE，附排除 api.trycloudflare.com 的原因）
 
 export function startTunnel(
   proxyPort: number,
@@ -64,12 +63,16 @@ export function startTunnel(
     }, timeoutMs)
 
     const onData = (d: Buffer): void => {
-      buf += d.toString()
+      const text = d.toString()
       // 关键行透传（ERR / 隧道地址），全量日志太大
-      for (const line of d.toString().split(/\r?\n/)) {
+      for (const line of text.split(/\r?\n/)) {
         if (/ERR|trycloudflare\.com|Register|failed/i.test(line)) onLog?.(line.trim().slice(0, 200))
       }
-      const m = buf.match(URL_RE)
+      // 地址拿到后不再累积缓冲：cloudflared 常驻数天日志不断，无界 += 是内存泄漏
+      if (settled) return
+      buf += text
+      if (buf.length > 262144) buf = buf.slice(-131072) // 兜底：只留尾部，正则窗口足够
+      const m = buf.match(QUICK_URL_RE)
       if (m && !settled) {
         settled = true
         clearTimeout(timer)
@@ -143,16 +146,21 @@ function cfSync(args: string[], timeoutMs = 30000): string {
 
 const ID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
 
-/** 确保（幂等）：隧道存在 + DNS 路由指向它；返回隧道 UUID */
-export function ensureNamedTunnel(tunnelName: string, hostname: string): string {
-  let tunnelId = ''
+/** 按名字找隧道 UUID；词边界匹配防 8 位短 id 前缀撞车（tunneldock-ab 匹配到 tunneldock-abc） */
+function findTunnelId(tunnelName: string): string {
   try {
     const list = cfSync(['tunnel', 'list'])
-    const m = list.split(/\r?\n/).find((l) => l.includes(tunnelName))
-    if (m) tunnelId = (m.match(ID_RE) || [''])[0]
+    const re = new RegExp(`${tunnelName}\\b`)
+    const line = list.split(/\r?\n/).find((l) => re.test(l))
+    return (line?.match(ID_RE) || [''])[0]
   } catch {
-    /* list 失败按不存在处理 */
+    return '' // list 失败按不存在处理
   }
+}
+
+/** 确保（幂等）：隧道存在 + DNS 路由指向它；返回隧道 UUID */
+export function ensureNamedTunnel(tunnelName: string, hostname: string): string {
+  let tunnelId = findTunnelId(tunnelName)
   if (!tunnelId) {
     const created = cfSync(['tunnel', 'create', tunnelName])
     tunnelId = (created.match(ID_RE) || [''])[0]
@@ -166,6 +174,42 @@ export function ensureNamedTunnel(tunnelName: string, hostname: string): string 
     if (!/already exists|已存在/i.test(msg)) throw e
   }
   return tunnelId
+}
+
+/** 删除 Cloudflare 侧隧道对象（cloudflared CLI 不支持删 DNS 记录——CNAME 会残留，
+ *  但重新绑定同域名时 route dns -f 会自动覆盖，无需手动清理） */
+export function deleteNamedTunnel(tunnelName: string): void {
+  const tunnelId = findTunnelId(tunnelName)
+  if (!tunnelId) return
+  cfSync(['tunnel', 'delete', '-f', tunnelId])
+}
+
+/** 命名隧道 ingress 配置目录（与服务注册表同放 userData\data） */
+export function tunnelsDir(): string {
+  return join(app.getPath('userData'), 'data', 'tunnels')
+}
+
+/** 启动时清扫孤儿 cloudflared：上次异常退出可能留下带我们 ingress 配置的进程。
+ *  只匹配「本实例 userData 下的配置路径」——安装版（Roaming\TunnelDock）与开发实例
+ *  （Roaming\tunneldock）的 cloudflared 互不越界，绝不能把正在服务的其他实例杀了。 */
+export function sweepOrphanTunnels(): void {
+  try {
+    const marker = join(app.getPath('userData'), 'data', 'tunnels')
+    const psMarker = marker.replace(/'/g, "''") // PS 单引号转义
+    const out = execFileSync(
+      'powershell',
+      [
+        '-NoProfile',
+        '-Command',
+        `$m = '${psMarker}'; $p = @(Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($m) }); $p.Count; $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`
+      ],
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    )
+    const n = Number((out.match(/\d+/) || ['0'])[0])
+    if (n > 0) console.log(`[sweep] 清理了 ${n} 个残留 cloudflared 进程`)
+  } catch {
+    /* 清扫失败不阻塞启动 */
+  }
 }
 
 /** 启动命名隧道：写 ingress 配置 → cloudflared run；URL 固定为 https://hostname */
@@ -185,7 +229,7 @@ export function startNamedTunnel(opts: {
   }
   const tunnelId = ensureNamedTunnel(opts.tunnelName, opts.hostname)
   const credFile = join(cloudflaredDir(), `${tunnelId}.json`)
-  const cfgDir = join(app.getPath('userData'), 'data', 'tunnels')
+  const cfgDir = tunnelsDir()
   mkdirSync(cfgDir, { recursive: true })
   const cfgFile = join(cfgDir, `${opts.serviceId}.yml`)
   writeFileSync(
@@ -239,18 +283,5 @@ export function startNamedTunnel(opts: {
       clearTimeout(timer)
       reject(new Error(`cloudflared 提前退出（code ${code}）`))
     })
-  })
-}
-
-/** 供外部检查登录状态用 */
-export function waitForCert(timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  return new Promise((resolve) => {
-    const tick = (): void => {
-      if (hasOriginCert()) return resolve(true)
-      if (Date.now() > deadline) return resolve(false)
-      setTimeout(tick, 1500)
-    }
-    tick()
   })
 }

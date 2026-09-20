@@ -2,35 +2,12 @@
 import { app } from 'electron'
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
-import { randomUUID, randomInt } from 'crypto'
+import { randomUUID } from 'crypto'
+import type { ServiceConfig } from '../shared/types'
+import { normalizeHost, HOST_RE, genPin } from './validate'
 
-export interface ServiceConfig {
-  id: string
-  name: string
-  targetHost: string
-  targetPort: number
-  pin: string
-  hostname: string // 留空 = 免费临时地址（Quick Tunnel）；填域名 = 命名隧道固定地址
-  tokenFile: string // 服务自带令牌的来源文件（如 dsh web 的 pm2 日志）；留空 = 不启用引导
-  autoStart: boolean
-  createdAt: number
-}
-
-export function genPin(): string {
-  return String(randomInt(10000000, 100000000)) // 8 位数字
-}
-
-// 目标地址归一化：容错用户输入（剥协议头/路径/空白，转小写）
-// "http://172.14.60.197/" → "172.14.60.197"
-export function normalizeHost(input: string): string {
-  let s = String(input || '').trim()
-  s = s.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '') // http:// https:// 等
-  s = s.replace(/\/.*$/, '') // 路径
-  s = s.replace(/:\d+$/, '') // 端口（端口应填在端口框；这里避免拼进 host）
-  return s.toLowerCase()
-}
-
-const HOST_RE = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/ // 主机名或 IPv4
+export type { ServiceConfig }
+export { genPin }
 
 class Registry {
   private file = ''
@@ -81,6 +58,10 @@ class Registry {
     const targetHost = normalizeHost(targetHostRaw)
     if (!targetHost || !HOST_RE.test(targetHost)) {
       throw new Error('目标地址格式不对：填主机名或 IP（如 127.0.0.1），不要带 http:// 和路径')
+    }
+    // IPC 层的 Number() 可能给出 NaN/越界，持久化前的最后一道闸
+    if (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) {
+      throw new Error('目标端口需为 1-65535 的整数')
     }
     const svc: ServiceConfig = {
       id: randomUUID().slice(0, 8),

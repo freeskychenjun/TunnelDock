@@ -2,18 +2,12 @@
 // M2：断线自动重连（指数退避）、随应用启动自动恢复、系统通知、自定义口令
 import { ipcMain, BrowserWindow, app, Notification } from 'electron'
 import { join } from 'path'
+import { rmSync } from 'fs'
 import { registry, ServiceConfig, genPin } from './registry'
 import { startGateway, stopGateway, GatewayHandle } from './gateway'
-import { startTunnel, startNamedTunnel, probeReady, stopTunnel, hasOriginCert } from './tunnel'
+import { startTunnel, startNamedTunnel, probeReady, stopTunnel, hasOriginCert, deleteNamedTunnel, tunnelsDir } from './tunnel'
+import type { ServiceState } from '../shared/types'
 import type { ChildProcess } from 'child_process'
-
-export interface ServiceState {
-  id: string
-  status: 'idle' | 'starting' | 'ready' | 'error' | 'stopping'
-  url: string | null
-  error: string | null
-  attempt: number // 重连次数（0 = 首次启动或已成功）
-}
 
 interface Runtime {
   gateway: GatewayHandle | null
@@ -201,6 +195,15 @@ function stopService(id: string): ServiceState {
   return r.status
 }
 
+/** 应用退出时统一回收（will-quit 调用）：停全部隧道与网关，不留孤儿进程 */
+export function shutdownAll(): void {
+  for (const r of runtimes.values()) {
+    r.desired = 'stopped'
+    clearReconnect(r)
+    teardown(r)
+  }
+}
+
 /** 应用启动时恢复所有 autoStart 的发布（错峰启动，避免同时抢隧道） */
 export function autoRestore(): void {
   const targets = registry.list().filter((s) => s.autoStart)
@@ -235,6 +238,12 @@ function setAppAutostart(on: boolean): void {
 export function registerIpc(): void {
   ipcMain.handle('td:list', () => registry.list())
   ipcMain.handle('td:states', () => [...runtimes.values()].map((r) => r.status))
+  ipcMain.handle('td:appInfo', () => ({
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    node: process.versions.node,
+    platform: process.platform
+  }))
   ipcMain.handle('td:create', (_e, p: { name: string; targetHost: string; targetPort: number; pin?: string }) => {
     if (!p?.name || !p?.targetHost || !p?.targetPort) throw new Error('参数不完整')
     if (p.pin !== undefined && !/^[0-9A-Za-z@#$%^&*-]{6,32}$/.test(p.pin)) {
@@ -244,9 +253,28 @@ export function registerIpc(): void {
   })
   ipcMain.handle('td:start', (_e, id: string) => startService(id))
   ipcMain.handle('td:stop', (_e, id: string) => stopService(id))
-  ipcMain.handle('td:remove', (_e, id: string) => {
+  ipcMain.handle('td:remove', (_e, id: string, purgeCloud?: boolean) => {
+    const svc = registry.get(id)
     stopService(id)
-    return registry.remove(id)
+    const removed = registry.remove(id)
+    let cloudPurged = false
+    let cloudError: string | undefined
+    if (svc) {
+      try {
+        rmSync(join(tunnelsDir(), `${svc.id}.yml`), { force: true }) // 本地 ingress 配置一并清
+      } catch {
+        /* 尽力删除 */
+      }
+      if (svc.hostname && purgeCloud) {
+        try {
+          deleteNamedTunnel(`tunneldock-${svc.id}`)
+          cloudPurged = true
+        } catch (e) {
+          cloudError = (e as Error).message
+        }
+      }
+    }
+    return { removed, cloudPurged, cloudError }
   })
   ipcMain.handle('td:resetPin', (_e, id: string) => {
     const pin = genPin()
