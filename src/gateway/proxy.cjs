@@ -32,10 +32,19 @@ const fails = new Map() // ip -> { times: [], blockedUntil }
 
 function post(msg) {
   try {
-    process.parentPort.postMessage(msg)
+    process.parentPort.postMessage(msg) // 生产：utilityProcess
   } catch {
-    /* 主进程不在了 */
+    try {
+      process.send(msg) // node:test 经 child_process.fork 驱动（见 tests/unit）
+    } catch {
+      /* 主进程不在了 */
+    }
   }
+}
+
+// HTML 转义：服务名 / next 都会被拼进登录页，不转义就是注入点
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
 }
 
 const BASIC_EXPECTED = 'Basic ' + Buffer.from(`${AUTH_USER}:${PIN}`).toString('base64')
@@ -77,8 +86,18 @@ function newSession() {
 }
 
 // ---- 按 IP 限速（只对“口令错误的失败”计数，成功即清零） ----
+// 真实客户端 IP：gateway 只监听 127.0.0.1，所有公网流量的 socket 对端都是本机
+// cloudflared——直接用 socket 地址会把全部访客算成同一个 IP（一错全封）。
+// cf-connecting-ip 由 Cloudflare 边缘强制覆写，隧道路径上不可伪造。
 function clientIp(req) {
-  return req.socket.remoteAddress || '?'
+  const cf = req.headers['cf-connecting-ip']
+  if (typeof cf === 'string' && cf.trim()) return cf.trim()
+  const xff = req.headers['x-forwarded-for']
+  if (typeof xff === 'string' && xff.trim()) {
+    const first = xff.split(',')[0].trim()
+    if (first) return first
+  }
+  return req.socket.remoteAddress || '?' // 本地直连调试
 }
 function isBlocked(ip) {
   const r = fails.get(ip)
@@ -101,7 +120,8 @@ function loginPage(next, error) {
   const err = error ? `<div class="err">PIN 或口令错误，请重试</div>` : ''
   const safeNext = next && next.startsWith('/') && !next.startsWith('//') ? next : '/'
   return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TunnelDock · ${SERVICE_NAME}</title><style>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; form-action 'self'">
+<title>TunnelDock · ${esc(SERVICE_NAME)}</title><style>
 body{margin:0;font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh}
 .card{background:#1e293b;border:1px solid #334155;border-radius:14px;padding:34px 30px;width:320px;box-shadow:0 10px 30px rgba(0,0,0,.4)}
 h1{font-size:17px;margin:0 0 4px;font-weight:600}.sub{color:#94a3b8;font-size:13px;margin:0 0 22px}
@@ -113,9 +133,9 @@ button{width:100%;margin-top:20px;padding:11px;border:none;border-radius:8px;bac
 .brand{margin-top:18px;text-align:center;color:#475569;font-size:11px}
 </style></head><body>
 <form class="card" method="POST" action="${LOGIN_PATH}">
-<h1>⚓ ${SERVICE_NAME}</h1><p class="sub">TunnelDock 保护的服务 · 请输入 PIN 访问</p>${err}
+<h1>⚓ ${esc(SERVICE_NAME)}</h1><p class="sub">TunnelDock 保护的服务 · 请输入 PIN 访问</p>${err}
 <label for="p">PIN（8 位数字）</label><input id="p" name="pin" type="password" inputmode="numeric" autocomplete="off" required autofocus>
-<input type="hidden" name="next" value="${safeNext}">
+<input type="hidden" name="next" value="${esc(safeNext)}">
 <button type="submit">进 入</button>
 <div class="brand">powered by TunnelDock</div>
 </form></body></html>`
@@ -124,7 +144,8 @@ button{width:100%;margin-top:20px;padding:11px;border:none;border-radius:8px;bac
 function setAuthCookie(res, token) {
   res.setHeader(
     'Set-Cookie',
-    `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
+    // Secure：隧道恒为 HTTPS，会话 Cookie 不应经 http 明文外泄
+    `${COOKIE_NAME}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
   )
 }
 
@@ -205,11 +226,19 @@ const server = http.createServer((req, res) => {
   const u = new URL(req.url || '/', 'http://x')
 
   if (req.method === 'POST' && u.pathname === LOGIN_PATH) {
+    // 登录表单体积极小；上限兜底防未认证的大包内存耗尽（body 无上限地 += 是 DoS 面）
     let body = ''
+    let oversized = false
     req.on('data', (c) => {
+      if (oversized) return
       body += c
+      if (body.length > 8192) {
+        oversized = true
+        req.destroy()
+      }
     })
     req.on('end', () => {
+      if (oversized) return
       const p = new URLSearchParams(body)
       const pin = p.get('pin') || ''
       const next = p.get('next') || '/'
@@ -274,6 +303,15 @@ server.on('upgrade', (req, socket, head) => {
 })
 
 server.on('error', (e) => post({ type: 'fatal', message: e.message }))
+
+// 会话与限速记录的周期清扫：过期 token / 消失 IP 的失败记录不常驻内存
+setInterval(() => {
+  const now = Date.now()
+  for (const [t, exp] of sessions) if (now > exp) sessions.delete(t)
+  for (const [ip, r] of fails) {
+    if (r.blockedUntil < now && r.times.every((t) => now - t >= FAIL_WINDOW_MS)) fails.delete(ip)
+  }
+}, 10 * 60 * 1000).unref()
 
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
   post({ type: 'listening', port: server.address().port })

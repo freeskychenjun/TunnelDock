@@ -2,17 +2,19 @@ import { app, BrowserWindow, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { TRAY_ICON_B64 } from './icon'
 import { registry } from './registry'
-import { registerIpc, publishDemo, autoRestore } from './ipc'
+import { registerIpc, publishDemo, autoRestore, shutdownAll } from './ipc'
+import { sweepOrphanTunnels } from './tunnel'
 
 // M2：断线重连、自启恢复、--hidden 静默启动、渲染进程崩溃自愈
 // 冒烟 --smoke：窗口就绪后自动退出；E2E --publish-demo <port> [--demo-pin xxx]：自动发布并打印 E2E_URL/E2E_PIN
+// 两者仅开发期（未打包）生效——安装包内这些标志是后门，一律忽略
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
-const SMOKE = process.argv.includes('--smoke')
+const SMOKE = !app.isPackaged && process.argv.includes('--smoke')
 const HIDDEN = process.argv.includes('--hidden')
-const demoArg = process.argv.indexOf('--publish-demo')
+const demoArg = !app.isPackaged ? process.argv.indexOf('--publish-demo') : -1
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -85,6 +87,7 @@ if (!app.requestSingleInstanceLock()) {
   void app.whenReady().then(() => {
     registry.init()
     registerIpc()
+    sweepOrphanTunnels() // 上次异常退出留下的 cloudflared 孤儿（带我们 ingress 配置的）
     createWindow()
     createTray()
     app.on('activate', () => {
@@ -103,6 +106,11 @@ if (!app.requestSingleInstanceLock()) {
 
 app.on('before-quit', () => {
   isQuitting = true
+})
+
+// 退出统一回收子进程：不主动 kill 的话 cloudflared 在 Windows 上会变成孤儿继续挂着隧道
+app.on('will-quit', () => {
+  shutdownAll()
 })
 
 app.on('window-all-closed', () => {
