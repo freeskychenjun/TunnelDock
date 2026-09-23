@@ -97,10 +97,13 @@ export function startTunnel(
 }
 
 /** URL 打印出来后边缘节点还要几秒才可达：轮询探活。
- *  expectText：要求响应正文包含该片段（如登录页特征），防止把日志里的无关域名误当隧道地址。 */
+ *  expectText：要求响应正文包含该片段（如登录页特征），防止把日志里的无关域名误当隧道地址。
+ *  失败分两类（错误对象的 kind 字段）：unreachable=本机连不上 CF 边缘（国内网络间歇阻断 443，
+ *  隧道对外部网络可能仍是好的）；mismatch=拿到了响应但内容不对（真·配置错误）。调用方区别对待。 */
 export async function probeReady(url: string, timeoutMs = 30000, expectText?: string): Promise<void> {
   const deadline = Date.now() + timeoutMs
   let lastErr = ''
+  let lastKind = 'unreachable'
   while (Date.now() < deadline) {
     try {
       const res = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
@@ -112,12 +115,16 @@ export async function probeReady(url: string, timeoutMs = 30000, expectText?: st
       } else {
         lastErr = `HTTP ${res.status}`
       }
+      lastKind = 'mismatch' // 有响应（无论内容对不对）→ 网络是通的，问题在配置侧
     } catch (e) {
       lastErr = (e as Error).message
+      lastKind = 'unreachable'
     }
     await new Promise((r) => setTimeout(r, 1500))
   }
-  throw new Error(`公网地址 ${url} 探活超时（${lastErr}）`)
+  const err = new Error(`公网地址 ${url} 探活超时（${lastErr}）`)
+  ;(err as Error & { kind?: string }).kind = lastKind
+  throw err
 }
 
 export function stopTunnel(child: ChildProcess): void {

@@ -133,7 +133,19 @@ async function startService(id: string, isReconnect = false): Promise<ServiceSta
       })
 
       // 3) 探活（边缘节点就绪需要几秒；必须认出我们自己的登录页，防误配垃圾域名）
-      await probeReady(t.url, 30000, 'TunnelDock')
+      //    命名隧道例外：隧道已注册成功（Registered），若只是本机连不上 CF 边缘 443
+      //    （国内网络间歇阻断，kind=unreachable），对外部网络（手机）隧道仍是通的——
+      //    降级为警告，不拆隧道；内容不对（mismatch）仍按失败处理，那是真配置错误
+      try {
+        await probeReady(t.url, 30000, 'TunnelDock')
+      } catch (e) {
+        if (!svc.hostname || (e as Error & { kind?: string }).kind !== 'unreachable') throw e
+        console.warn(`[probe] ${svc.name}: 本机无法直连 CF 边缘（${(e as Error).message}），隧道已注册，按已上线处理`)
+        notify(
+          'TunnelDock 隧道已上线（本机探活未通过）',
+          `${svc.name} 隧道已注册，但本机当前无法直连 Cloudflare 边缘；手机等外部网络可能仍可正常访问`
+        )
+      }
 
       const wasReconnect = r.attempts > 0
       r.attempts = 0
