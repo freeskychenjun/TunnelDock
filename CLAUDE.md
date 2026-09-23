@@ -32,7 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **ipc.ts = 编排与状态机**：状态 `idle|starting|ready|error`；`starting` Promise 单飞防并发启动；重连退避表 `[5s,15s,60s]`，超次数转 error；`desired==='stopped'` 时进程退出不触发重连；gateway utilityProcess 崩溃与 cloudflared 退出汇入同一条 `scheduleReconnect`
 - **QUIC→http2 自愈**：重连启动（attempts≥1）或本服务曾用 http2 成功（`http2Prefs`，内存 Set 不落盘）→ 给 cloudflared 加 `--protocol http2` 强制 TCP
-- **tunnel.ts**：`hostname` 留空走 Quick Tunnel（免费随机域名；从日志正则抓 URL，必须匹配多词子域名——单词的 `api.trycloudflare.com` 是 CF 自家端点，会出现在日志里须排除）；非空走命名隧道（`ensureNamedTunnel` 幂等 create + route dns，ingress yml 写到 `data/tunnels/<serviceId>.yml`）。`probeReady` 要求响应含 "TunnelDock" 防误配垃圾域名
+- **tunnel.ts**：`hostname` 留空走 Quick Tunnel（免费随机域名；从日志正则抓 URL，必须匹配多词子域名——单词的 `api.trycloudflare.com` 是 CF 自家端点，会出现在日志里须排除）；非空走命名隧道——本地 `data/tunnels/<serviceId>.yml` + 凭据齐备且域名未变时 `reuseLocalTunnelId` 直接复用、**免 CF API**（重启不依赖 api.cloudflare.com 可达性；此路径下 run 提前退出会清掉 yml，下次重连自动回落完整 ensure 自愈），否则 `ensureNamedTunnel` 幂等 create + route dns（list 失败抛错，不再按"不存在"处理）。`probeReady` 要求响应含 "TunnelDock" 防误配垃圾域名
 - **proxy.cjs（PIN 墙网关，跑在 utilityProcess）**：网页登录 `POST /_td_auth` + 会话 Cookie（12h，带 Secure）+ Basic（用户名 `tunneldock`、口令即 PIN）双通道；按**真实客户端 IP**（`cf-connecting-ip`，socket 对端永远是本机 cloudflared，直接用 socket 地址会把全站算成一个 IP）5 次失败/分钟 → 封锁 60s；登录页插值全部 HTML 转义 + CSP；WS upgrade 原样透传（未认证 401）；转发时剥 Origin/Referer/Sec-Fetch-Site、重写 Host、`agent:false` 不复用上游连接；可选令牌引导（上游根路径回 401 → 读 tokenFile 取最新 `token=xxx` 303 一次，无 token 参数才引导故天然防循环）
 - **registry.ts**：`services.json` 原子写（tmp+rename）、容错 BOM；init 时 `normalizeHost` 自愈历史脏数据
 - **渲染层**（`App.vue` 单文件 UI）只能经 `src/preload/index.ts` 的类型化 API（`td:*` IPC 通道）通信；跨进程类型单一来源在 `src/shared/types.ts`（registry/preload/env.d.ts 都从这取）；状态变化经 `td:event` 广播到所有窗口

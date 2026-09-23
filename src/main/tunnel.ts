@@ -1,11 +1,11 @@
 // cloudflared 生命周期：定位二进制 → 起快隧道 → 解析公网 URL → 探活 → 可 kill
 // M3：命名隧道（固定域名，需 Cloudflare 账号 + cert.pem + 自有域名）
 import { spawn, ChildProcess, execFileSync } from 'child_process'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import { randomUUID } from 'crypto'
-import { QUICK_URL_RE } from './validate'
+import { QUICK_URL_RE, parseTunnelYml } from './validate'
 
 export interface TunnelHandle {
   url: string
@@ -146,16 +146,18 @@ function cfSync(args: string[], timeoutMs = 30000): string {
 
 const ID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
 
-/** 按名字找隧道 UUID；词边界匹配防 8 位短 id 前缀撞车（tunneldock-ab 匹配到 tunneldock-abc） */
+/** 按名字找隧道 UUID；词边界匹配防 8 位短 id 前缀撞车（tunneldock-ab 匹配到 tunneldock-abc）。
+ *  list 本身失败（CF API 不可达）必须抛错——按"不存在"处理会误导后续去 create */
 function findTunnelId(tunnelName: string): string {
+  let list: string
   try {
-    const list = cfSync(['tunnel', 'list'])
-    const re = new RegExp(`${tunnelName}\\b`)
-    const line = list.split(/\r?\n/).find((l) => re.test(l))
-    return (line?.match(ID_RE) || [''])[0]
-  } catch {
-    return '' // list 失败按不存在处理
+    list = cfSync(['tunnel', 'list'])
+  } catch (e) {
+    throw new Error(`查询 Cloudflare 隧道列表失败（API 不可达？稍后重试）：${(e as Error).message.slice(0, 200)}`)
   }
+  const re = new RegExp(`${tunnelName}\\b`)
+  const line = list.split(/\r?\n/).find((l) => re.test(l))
+  return (line?.match(ID_RE) || [''])[0]
 }
 
 /** 确保（幂等）：隧道存在 + DNS 路由指向它；返回隧道 UUID */
@@ -174,6 +176,20 @@ export function ensureNamedTunnel(tunnelName: string, hostname: string): string 
     if (!/already exists|已存在/i.test(msg)) throw e
   }
   return tunnelId
+}
+
+/** 免 API 快速路径：本机 yml + 隧道凭据齐备且域名未变 → 直接复用隧道 UUID。
+ *  DNS 路由在云端持久存在，只有首次创建 / 换绑域名才真正需要走 CF API——
+ *  常规重启因此不再依赖 api.cloudflare.com 的可达性（本机网络到它偶发超时） */
+export function reuseLocalTunnelId(serviceId: string, hostname: string): string | null {
+  let parsed: { tunnelId: string; hostname: string } | null = null
+  try {
+    parsed = parseTunnelYml(readFileSync(join(tunnelsDir(), `${serviceId}.yml`), 'utf8'))
+  } catch {
+    return null // yml 不存在 / 读不了 → 走完整 ensure
+  }
+  if (!parsed || parsed.hostname !== hostname) return null
+  return existsSync(join(cloudflaredDir(), `${parsed.tunnelId}.json`)) ? parsed.tunnelId : null
 }
 
 /** 删除 Cloudflare 侧隧道对象（cloudflared CLI 不支持删 DNS 记录——CNAME 会残留，
@@ -226,10 +242,13 @@ export function startNamedTunnel(opts: {
 }): Promise<TunnelHandle> {
   const exe = locateCloudflared()
   if (!exe) return Promise.reject(new Error('未找到 cloudflared'))
-  if (!hasOriginCert()) {
+  // 免 API 快速路径：本地 yml + 凭据 + 域名未变 → 跳过 list/create/route dns 直接跑；
+  // cert.pem 只在需要调 CF API 的完整 ensure 分支才要求存在
+  const reusedId = reuseLocalTunnelId(opts.serviceId, opts.hostname)
+  if (!reusedId && !hasOriginCert()) {
     return Promise.reject(new Error('尚未完成 Cloudflare 授权（cert.pem 缺失）'))
   }
-  const tunnelId = ensureNamedTunnel(opts.tunnelName, opts.hostname)
+  const tunnelId = reusedId ?? ensureNamedTunnel(opts.tunnelName, opts.hostname)
   const credFile = join(cloudflaredDir(), `${tunnelId}.json`)
   const cfgDir = tunnelsDir()
   mkdirSync(cfgDir, { recursive: true })
@@ -283,6 +302,15 @@ export function startNamedTunnel(opts: {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (reusedId) {
+        // 快速路径下提前退出多半是本地配置过期（隧道在云端被删 / 凭据失效）：
+        // 清掉 yml 让下一次重连走完整 ensure 自愈，而不是永远撞同一份陈旧配置
+        try {
+          rmSync(cfgFile, { force: true })
+        } catch {
+          /* 尽力 */
+        }
+      }
       reject(new Error(`cloudflared 提前退出（code ${code}）`))
     })
   })
