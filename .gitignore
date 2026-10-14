@@ -3,5 +3,6 @@ out/
 dist/
 release*/
 resources/cloudflared.exe
+.rt-test/
 *.log
 .DS_Store

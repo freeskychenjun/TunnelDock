@@ -260,7 +260,8 @@ const STATUS_TEXT: Record<string, string> = {
             <input type="checkbox" :checked="svc.autoStart" @change="toggleAutoStart(svc)" /> 自启
           </label>
           <button v-if="['idle', 'error'].includes(stateOf(svc.id).status)" class="mini run" @click="start(svc.id)">启动</button>
-          <button v-else-if="stateOf(svc.id).status === 'ready'" class="mini stop" @click="stop(svc.id)">停止</button>
+          <!-- starting 也要能停：慢速重试可能持续数小时，得给用户叫停的出口 -->
+          <button v-else-if="['starting', 'ready'].includes(stateOf(svc.id).status)" class="mini stop" @click="stop(svc.id)">停止</button>
           <button class="mini danger" @click="askRemove(svc)">删除</button>
         </div>
       </div>

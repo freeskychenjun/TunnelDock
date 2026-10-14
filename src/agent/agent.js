@@ -15,6 +15,7 @@
  * 国内网络适配:
  *  - 只向 443 拨 wss，不碰被 DPI 封的 7844
  *  - edgeIps 非空时用「TCP 连边缘 IP + SNI/Host 归域名」的进程内钉 IP（无需改 hosts）
+ * 独立运行支持（非 utilityProcess，如手工测试）: postMessage 退化为 stdout JSON 行
  */
 import WebSocket from 'ws'
 import http from 'node:http'
@@ -22,11 +23,18 @@ import fs from 'node:fs'
 
 const CHUNK = 32768
 
+const parentPort = process.parentPort || { postMessage() {} }
+if (!process.parentPort) {
+  parentPort.postMessage = (m) => {
+    try { console.log(JSON.stringify(m)) } catch { /* noop */ }
+  }
+}
+
 let cfg = null
 try {
   cfg = JSON.parse(process.argv[process.argv.length - 1])
 } catch (e) {
-  process.parentPort.postMessage({ type: 'fatal', message: '配置解析失败: ' + e.message })
+  parentPort.postMessage({ type: 'fatal', message: '配置解析失败: ' + e.message })
   throw e
 }
 
@@ -34,7 +42,7 @@ const { hostname, agentSecret, targetHost, targetPort, tokenFile, edgeIps } = cf
 
 function log(msg, level = 'info') {
   try {
-    process.parentPort.postMessage({ type: 'log', level, message: String(msg).slice(0, 500) })
+    parentPort.postMessage({ type: 'log', level, message: String(msg).slice(0, 500) })
   } catch {
     /* 主进程已退出 */
   }
@@ -135,7 +143,7 @@ function handleRequest(ws, frame) {
       }
       void sendJson(ws, { type: 'res-start', id: reqId, status: res.statusCode || 502, headers: respHeaders })
 
-      // 流式转发为 chunk 帧（node 侧无 chunked 手工解析必要——http 模块已解好）
+      // 流式转发为 chunk 帧（node http 模块已解好 chunked，直接流式切片）
       res.on('data', (buf) => {
         for (let i = 0; i < buf.length; i += CHUNK) {
           void sendJson(ws, { type: 'chunk', id: reqId, data: buf.subarray(i, i + CHUNK).toString('base64') })
@@ -235,7 +243,7 @@ function handleWsFrame(ws, frame) {
   }
 }
 
-// ── 主连接（wss 直连 443，断线指数退避；连接打开后挂起至关闭，等价 python 的 async with）──
+// ── 主连接（wss 直连 443；连接打开后挂起至关闭，等价 python 的 async with）──
 function connectOnceWrapped(edgeIp) {
   return new Promise((resolve, reject) => {
     const url = `wss://${hostname}/__agent?secret=${encodeURIComponent(agentSecret)}`
@@ -254,7 +262,7 @@ function connectOnceWrapped(edgeIp) {
     let opened = false
     ws.on('open', () => {
       opened = true
-      process.parentPort.postMessage({ type: 'ready' })
+      parentPort.postMessage({ type: 'ready' })
       wsConns.clear()
       log(`已连接 (https://${hostname}${edgeIp ? ' via ' + edgeIp : ''})`)
     })
@@ -274,7 +282,7 @@ function connectOnceWrapped(edgeIp) {
       if (!opened) reject(e)
     })
     ws.on('close', () => {
-      process.parentPort.postMessage({ type: 'offline' })
+      parentPort.postMessage({ type: 'offline' })
       for (const [, conn] of wsConns) {
         try { if (conn.ws) conn.ws.close() } catch { /* 已关 */ }
       }
@@ -294,8 +302,9 @@ async function run() {
     const edgeFallback = Array.isArray(edgeIps) ? [...edgeIps] : []
     let ok = false
     let lastErr = null
-    // 先用系统默认解析，DNS 抽风时依次试钉 IP
-    for (const ip of [null, ...edgeFallback]) {
+    // 实测教训（M2b）：默认 DNS 解析到的边缘节点会出现「下行通、上行丢」的半瘫，
+    // 已验证可达的钉 IP 必须排在默认解析前面；默认解析只作最后兜底
+    for (const ip of [...edgeFallback, null]) {
       try {
         await connectOnceWrapped(ip)
         ok = true

@@ -1,7 +1,7 @@
 {
   "name": "tunneldock",
   "productName": "TunnelDock",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "隧道坞 TunnelDock — 把内网 Web 服务一键安全发布到公网",
   "main": "out/main/index.js",
   "author": "Agui",
@@ -9,8 +9,9 @@
   "private": true,
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
-    "smoke": "electron-vite build && electron out/main/index.js --smoke",
+    "build": "electron-vite build && npm run build:agent",
+    "build:agent": "esbuild src/agent/agent.js --bundle --format=esm --platform=node --external:electron --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=out/main/agent.mjs",
+    "smoke": "npm run build && electron out/main/index.js --smoke",
     "typecheck": "tsc --noEmit -p tsconfig.json && vue-tsc --noEmit -p tsconfig.web.json",
     "unit": "node --test \"tests/unit/*.test.ts\"",
     "prep": "powershell -ExecutionPolicy Bypass -File scripts/prep-cloudflared.ps1",

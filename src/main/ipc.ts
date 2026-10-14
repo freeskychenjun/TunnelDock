@@ -20,9 +20,10 @@ interface Runtime {
 }
 
 const runtimes = new Map<string, Runtime>()
-const BACKOFF_MS = [5000, 15000, 60000] // 退避表；超过次数转 error
-// QUIC（UDP）被网络掐断的环境下自动降级 http2（TCP）：
-// 首次失败后的重连即切 http2；一旦某服务用 http2 成功过，后续（含手动重启）直接用 http2
+const BACKOFF_MS = [5000, 15000, 60000, 300000] // 退避表；封顶 5 分钟后无限慢速重试，不转 error
+// 国内 ISP 对 cloudflared 边缘 7844 存在间歇性 DPI 阻断（QUIC/http2 同时被掐，恢复窗口随机出现），
+// 放弃重试服务就永远上不来——所以重连永不停止，窗口一开即自愈。
+// QUIC（UDP）被掐时奇数次重连轮换 http2（TCP）；一旦某服务用 http2 成功过，后续（含手动重启）直接用 http2
 const http2Prefs = new Set<string>()
 
 function rt(id: string): Runtime {
@@ -112,8 +113,8 @@ async function startService(id: string, isReconnect = false): Promise<ServiceSta
       })
 
       // 2) 隧道：有域名走命名隧道（固定地址），否则免费临时地址
-      // QUIC 失败后的重连、或本服务曾用 http2 成功过 → 强制 http2（TCP）
-      const forceHttp2 = http2Prefs.has(svc.id) || (isReconnect && r.attempts >= 1)
+      // QUIC 失败后的重连按奇偶轮换协议（奇数次 http2、偶数次回 QUIC）、或本服务曾用 http2 成功过 → 强制 http2（TCP）
+      const forceHttp2 = http2Prefs.has(svc.id) || (isReconnect && r.attempts % 2 === 1)
       const cfLog = (line: string): void => console.log(`[cf:${svc.name}] ${line}`)
       const t = svc.hostname
         ? await startNamedTunnel({
@@ -158,13 +159,13 @@ async function startService(id: string, isReconnect = false): Promise<ServiceSta
     } catch (e) {
       teardown(r)
       const msg = (e as Error).message
-      if (r.desired === 'running' && r.attempts < BACKOFF_MS.length) {
-        // 启动失败也按退避重试（比如开机时网络还没就绪）
+      if (r.desired === 'running') {
+        // 启动失败也按退避无限重试（比如开机时网络还没就绪、ISP 间歇阻断边缘 7844）
         scheduleReconnect(id, msg)
       } else {
         setStatus(id, { status: 'error', url: null, error: msg, attempt: r.attempts })
-        throw e
       }
+      throw e // 抛给调用方即时看到原因（e2e 的 E2E_FAIL 也依赖这里），重试在后台继续
     }
   })()
   try {
@@ -181,10 +182,12 @@ function scheduleReconnect(id: string, reason = '隧道连接断开'): void {
   const delay = BACKOFF_MS[Math.min(r.attempts, BACKOFF_MS.length - 1)]
   r.attempts += 1
   const svc = registry.get(id)
-  if (r.attempts > BACKOFF_MS.length) {
-    setStatus(id, { status: 'error', url: null, error: `${reason}，自动重连 ${r.attempts - 1} 次仍失败，已停止重试`, attempt: r.attempts })
-    notify('TunnelDock 重连失败', `${svc?.name ?? id} 多次重连失败，请手动启动`)
-    return
+  if (r.attempts === BACKOFF_MS.length) {
+    // 刚进入最慢一档：提示一次（无限重试不能反复弹通知），此后静默自愈
+    notify(
+      'TunnelDock 转入慢速重连',
+      `${svc?.name ?? id} 持续连不上 Cloudflare 边缘，之后每 5 分钟自动重试，网络恢复后会自动上线`
+    )
   }
   setStatus(id, { status: 'starting', url: null, error: `${reason}，${Math.round(delay / 1000)}s 后第 ${r.attempts} 次重连`, attempt: r.attempts })
   clearReconnect(r)
