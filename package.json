@@ -15,8 +15,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && vue-tsc --noEmit -p tsconfig.web.json",
     "unit": "node --test \"tests/unit/*.test.ts\"",
     "prep": "powershell -ExecutionPolicy Bypass -File scripts/prep-cloudflared.ps1",
-    "dist": "electron-vite build && electron-builder --win nsis",
-    "e2e": "powershell -ExecutionPolicy Bypass -File scripts/e2e.ps1"
+    "dist": "npm run build && electron-builder --win nsis",
+    "e2e": "powershell -ExecutionPolicy Bypass -File scripts/e2e.ps1",
+    "e2e-rt": "node scripts/e2e-rt.mjs"
   },
   "dependencies": {
     "qrcode": "^1.5.4",

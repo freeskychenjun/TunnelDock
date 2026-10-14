@@ -20,8 +20,12 @@ const demoArg = !app.isPackaged ? process.argv.indexOf('--publish-demo') : -1
 // 开发/测试实例数据隔离：设 TUNNELDOCK_USER_DATA 后走独立 userData（e2e.ps1 会设置）。
 // Windows 文件系统大小写不敏感，%APPDATA%\TunnelDock 与 %APPDATA%\tunneldock 是同一目录——
 // 开发实例不隔离就会和安装版共用 services.json 互相覆盖、清扫时误杀对方隧道。
-// 仅开发期生效；安装版数据位置不受环境变量影响。
-if (process.env.TUNNELDOCK_USER_DATA && !app.isPackaged) {
+// 打包版默认忽略此变量（防安装包被远程注入环境变量操纵数据目录）；
+// 仅当同时显式设置 TUNNELDOCK_ALLOW_PACKAGED_DATA_OVERRIDE=1 时放行——
+// 这是 e2e-rt 验证安装包（asar.unpacked 的 agent.mjs）用的本机测试钩子，
+// 需要攻击者已完全控制本机环境变量才可触发，不构成远程攻击面。
+const allowPackagedOverride = process.env.TUNNELDOCK_ALLOW_PACKAGED_DATA_OVERRIDE === '1'
+if (process.env.TUNNELDOCK_USER_DATA && (!app.isPackaged || allowPackagedOverride)) {
   app.setPath('userData', process.env.TUNNELDOCK_USER_DATA)
 }
 
