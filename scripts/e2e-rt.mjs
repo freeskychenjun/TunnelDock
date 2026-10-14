@@ -26,7 +26,7 @@ const ACCOUNT = process.env.RT_E2E_ACCOUNT_ID || ''
 const ZONE = process.env.RT_E2E_ZONE_ID || ''
 const HOST = process.env.RT_E2E_HOST || ''
 const PACKAGED = process.env.RT_E2E_PACKAGED === '1'
-const PIN = '606182'
+const PIN = 'e2epin01'
 const PIN_BAD = '000000'
 const PORT = 4591
 
