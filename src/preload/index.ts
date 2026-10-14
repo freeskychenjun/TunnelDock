@@ -27,8 +27,10 @@ contextBridge.exposeInMainWorld('tunneldock', {
   hasOriginCert: (): Promise<boolean> => ipcRenderer.invoke('td:hasOriginCert'),
   // 反向隧道（RT）向导
   rtStatus: (): Promise<RtStatus> => ipcRenderer.invoke('rt:status'),
-  rtSetup: (token: string): Promise<{ zones: RtZoneInfo[] }> => ipcRenderer.invoke('rt:setup', token),
-  rtDeploy: (token: string, zoneId: string): Promise<RtStatus> => ipcRenderer.invoke('rt:deploy', token, zoneId),
+  rtSetup: (token: string, dnsToken?: string): Promise<{ zones: RtZoneInfo[] }> =>
+    ipcRenderer.invoke('rt:setup', token, dnsToken),
+  rtDeploy: (token: string, zoneId: string, dnsToken?: string): Promise<RtStatus> =>
+    ipcRenderer.invoke('rt:deploy', token, zoneId, dnsToken),
   rtForget: (): Promise<RtStatus> => ipcRenderer.invoke('rt:forget'),
   // 应用级开机自启
   getAppAutostart: (): Promise<boolean> => ipcRenderer.invoke('td:appAutostart:get'),

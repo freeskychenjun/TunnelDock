@@ -23,6 +23,7 @@ const appInfo = ref<AppInfo | null>(null)
 const rtModal = ref(false)
 const rtInfo = ref<RtStatus | null>(null)
 const rtTokenInput = ref('')
+const rtDnsTokenInput = ref('')
 const rtZones = ref<{ id: string; name: string }[]>([])
 const rtZoneId = ref('')
 const rtBusy = ref(false)
@@ -223,7 +224,7 @@ async function rtVerify(): Promise<void> {
   rtBusy.value = true
   rtHint.value = '正在验证 Token 并读取域名…'
   try {
-    const r = await window.tunneldock.rtSetup(rtTokenInput.value.trim())
+    const r = await window.tunneldock.rtSetup(rtTokenInput.value.trim(), rtDnsTokenInput.value.trim() || undefined)
     rtZones.value = r.zones
     rtZoneId.value = r.zones[0]?.id || ''
     rtHint.value = `Token 有效，找到 ${r.zones.length} 个域名，选择后点「部署」`
@@ -242,7 +243,7 @@ async function rtDoDeploy(): Promise<void> {
   rtBusy.value = true
   rtHint.value = '正在部署（DNS + Worker + 路由，约 10-30 秒）…'
   try {
-    rtInfo.value = await window.tunneldock.rtDeploy(rtTokenInput.value.trim(), rtZoneId.value)
+    rtInfo.value = await window.tunneldock.rtDeploy(rtTokenInput.value.trim(), rtZoneId.value, rtDnsTokenInput.value.trim() || undefined)
     formTransport.value = 'wss'
     rtHint.value = '部署完成！新建发布默认走反向隧道；已有服务在卡片上点「反向隧道」切换'
     await refresh()
@@ -447,6 +448,8 @@ const STATUS_TEXT: Record<string, string> = {
           </p>
           <label>API Token（粘贴后点「验证」）</label>
           <input v-model="rtTokenInput" placeholder="在 dash.cloudflare.com/profile/api-tokens 创建" />
+          <label>DNS Token（可选；主 Token 没有 DNS·Edit 权限时填一个有的）</label>
+          <input v-model="rtDnsTokenInput" placeholder="留空 = 与上面相同" />
           <div v-if="rtZones.length > 0" style="margin-top: 12px">
             <label>选择域名（子域名会自动分配为 服务ID.域名）</label>
             <select v-model="rtZoneId" style="width: 100%">

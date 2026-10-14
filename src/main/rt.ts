@@ -29,6 +29,8 @@ export const EDGE_IPS = ['162.159.136.4', '104.16.9.34', '162.159.140.102', '162
 export interface RtAccount {
   tokenEnc: string // safeStorage 加密 + base64；或明文（plainToken 兜底标记）
   plainToken?: boolean
+  dnsTokenEnc?: string // 可选独立 DNS Token（权限拆分场景：主 Token 无 DNS Edit 时用）
+  plainDnsToken?: boolean
   accountId: string
   accountName: string
   zoneId: string
@@ -64,6 +66,19 @@ export function rtToken(): string | null {
   }
 }
 
+/** 解出 DNS Token（独立配置时用之；否则回退主 Token） */
+export function rtDnsToken(): string | null {
+  if (!account) return null
+  const enc = account.dnsTokenEnc
+  if (!enc) return rtToken()
+  if (account.plainDnsToken) return enc
+  try {
+    return safeStorage.decryptString(Buffer.from(enc, 'base64'))
+  } catch {
+    return null
+  }
+}
+
 function encodeToken(token: string): { tokenEnc: string; plainToken?: boolean } {
   try {
     if (safeStorage.isEncryptionAvailable()) {
@@ -82,7 +97,7 @@ function saveAccount(acc: RtAccount | null): void {
 }
 
 /** 第一步：验证 Token，返回账号与可选 zone 列表（向导选 zone 用） */
-export async function rtSetup(token: string): Promise<{ accounts: CfAccount[]; zones: CfZone[] }> {
+export async function rtSetup(token: string, dnsToken?: string): Promise<{ accounts: CfAccount[]; zones: CfZone[] }> {
   const token2 = String(token || '').trim()
   if (!token2) throw new Error('请先粘贴 API Token')
   await verifyToken(token2)
@@ -90,12 +105,16 @@ export async function rtSetup(token: string): Promise<{ accounts: CfAccount[]; z
   if (accounts.length === 0) throw new Error('Token 有效但读不到账号（缺 Account 权限？）')
   const zones = await listZones(token2)
   if (zones.length === 0) throw new Error('该账号下没有活跃域名（zone），先在 Cloudflare 添加域名')
+  if (dnsToken && dnsToken.trim()) {
+    await verifyToken(String(dnsToken).trim()) // DNS Token 只需有效即可（权限在部署时才真正用到）
+  }
   return { accounts, zones }
 }
 
 /** 第二步：选定 zone 后全量部署（幂等，可反复执行） */
-export async function rtDeploy(token: string, zoneId: string): Promise<RtStatus> {
+export async function rtDeploy(token: string, zoneId: string, dnsToken?: string): Promise<RtStatus> {
   const token2 = String(token || '').trim()
+  const dnsToken2 = String(dnsToken || '').trim() || token2
   const zones = await listZones(token2)
   const zone = zones.find((z) => z.id === zoneId)
   if (!zone) throw new Error('zone 不存在或不可用')
@@ -105,6 +124,7 @@ export async function rtDeploy(token: string, zoneId: string): Promise<RtStatus>
 
   const acc: RtAccount = {
     ...encodeToken(token2),
+    ...(dnsToken2 !== token2 ? encodeDnsToken(dnsToken2) : {}),
     accountId: accounts[0].id,
     accountName: accounts[0].name,
     zoneId: zone.id,
@@ -121,7 +141,7 @@ export async function rtDeploy(token: string, zoneId: string): Promise<RtStatus>
   }
   const pins = buildPins()
   for (const hostname of Object.keys(pins)) {
-    await upsertSubdomain(token2, zone.id, hostname)
+    await upsertSubdomain(dnsToken2, zone.id, hostname)
   }
 
   // 2. Worker + zone 级路由
@@ -135,15 +155,27 @@ export async function rtDeploy(token: string, zoneId: string): Promise<RtStatus>
   return rtStatus()
 }
 
+function encodeDnsToken(token: string): { dnsTokenEnc: string; plainDnsToken?: boolean } {
+  try {
+    if (safeStorage.isEncryptionAvailable()) {
+      return { dnsTokenEnc: safeStorage.encryptString(token).toString('base64') }
+    }
+  } catch {
+    /* 退化明文 */
+  }
+  return { dnsTokenEnc: token, plainDnsToken: true }
+}
+
 /** 服务增删/改 PIN/改传输模式后同步 PINS（重部署 vars，秒级；不碰路由） */
 export async function syncPins(): Promise<void> {
   const acc = getRtAccount()
   const token = rtToken()
+  const dnsToken = rtDnsToken()
   if (!acc || !token) return
   const pins = buildPins()
   // 新 hostname 补 DNS
   for (const hostname of Object.keys(pins)) {
-    await upsertSubdomain(token, acc.zoneId, hostname)
+    await upsertSubdomain(dnsToken || token, acc.zoneId, hostname)
   }
   await deployWorker({
     token, accountId: acc.accountId, scriptName: SCRIPT_NAME,
@@ -185,7 +217,7 @@ export async function rtPurgeCloud(): Promise<void> {
   for (const svc of registry.list()) {
     if (svc.transport === 'wss' && svc.hostname) {
       try {
-        await deleteDnsRecord(token, acc.zoneId, svc.hostname)
+        await deleteDnsRecord(rtDnsToken() || token, acc.zoneId, svc.hostname)
       } catch {
         /* 单条失败不阻塞 */
       }

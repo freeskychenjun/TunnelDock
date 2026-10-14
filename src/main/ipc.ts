@@ -446,8 +446,8 @@ export function registerIpc(): void {
   })
   // ---- 反向隧道（RT）向导 ----
   ipcMain.handle('rt:status', () => rtStatus())
-  ipcMain.handle('rt:setup', (_e, token: string) => rtSetup(token))
-  ipcMain.handle('rt:deploy', (_e, token: string, zoneId: string) => rtDeploy(token, zoneId))
+  ipcMain.handle('rt:setup', (_e, token: string, dnsToken?: string) => rtSetup(token, dnsToken))
+  ipcMain.handle('rt:deploy', (_e, token: string, zoneId: string, dnsToken?: string) => rtDeploy(token, zoneId, dnsToken))
   ipcMain.handle('rt:forget', () => rtForget())
   ipcMain.handle('td:setTokenFile', (_e, id: string, file: string) => {
     const f = String(file || '').trim()

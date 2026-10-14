@@ -24,8 +24,8 @@ declare global {
       setTransport: (id: string, transport: 'cloudflared' | 'wss') => Promise<ServiceConfig>
       hasOriginCert: () => Promise<boolean>
       rtStatus: () => Promise<RtStatus>
-      rtSetup: (token: string) => Promise<{ zones: { id: string; name: string }[] }>
-      rtDeploy: (token: string, zoneId: string) => Promise<RtStatus>
+      rtSetup: (token: string, dnsToken?: string) => Promise<{ zones: { id: string; name: string }[] }>
+      rtDeploy: (token: string, zoneId: string, dnsToken?: string) => Promise<RtStatus>
       rtForget: () => Promise<RtStatus>
       getAppAutostart: () => Promise<boolean>
       setAppAutostart: (on: boolean) => Promise<boolean>
