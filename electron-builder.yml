@@ -7,9 +7,10 @@ directories:
 files:
   - out/**
   - package.json
-# gateway.js 是 utilityProcess fork 的入口，必须真实存在于磁盘（解出 asar）
+# gateway.js / agent.js 是 utilityProcess fork 的入口，必须真实存在于磁盘（解出 asar）
 asarUnpack:
   - out/main/gateway.js
+  - out/main/agent.js
 extraResources:
   # cloudflared 随安装包内置（prep 脚本从本机复制，不入 git）
   - from: resources/cloudflared.exe
