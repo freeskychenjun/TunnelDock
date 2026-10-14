@@ -2,6 +2,7 @@ import { app, BrowserWindow, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { TRAY_ICON_B64 } from './icon'
 import { registry } from './registry'
+import { initRtAccount } from './rt'
 import { registerIpc, publishDemo, autoRestore, shutdownAll } from './ipc'
 import { sweepOrphanTunnels } from './tunnel'
 
@@ -94,6 +95,7 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(() => {
     registry.init()
+    initRtAccount()
     registerIpc()
     sweepOrphanTunnels() // 上次异常退出留下的 cloudflared 孤儿（带我们 ingress 配置的）
     createWindow()

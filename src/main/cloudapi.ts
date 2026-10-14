@@ -157,36 +157,71 @@ export type PinsJson = Record<string, ServicePinEntry>
 export interface DeployWorkerOptions {
   token: string
   accountId: string
-  zoneId: string
   scriptName: string // 如 tunneldock-rt
   workerCode: string // src/worker/tunnel.js 的完整源码（ES module）
   pins: PinsJson
   agentSecret: string
-  zoneName: string
 }
 
 /**
- * 上传/更新 Worker（module 语法 multipart），绑定 DO + vars + 全 zone 路由。
- * 路由用 {zoneName}/* 兜底（未匹配 PINS_JSON 的 host 由 Worker 返回 404），
- * 精确子域路由随子域增删频繁变更，统一走兜底最稳。
+ * 上传/更新 Worker（module 语法 multipart），绑定 DO + vars。
+ * ★ 路由不能用 metadata.routes（会被 API 静默忽略——M2b 实测），必须走 ensureRoute。
+ * DO 迁移同理：仅在新脚本报 10061 时补发（migrations 对象 + 免费版必须 new_sqlite_classes）。
  */
 export async function deployWorker(opts: DeployWorkerOptions): Promise<void> {
-  const metadata = {
+  const base = {
     main_module: 'worker.js',
-    compatibility_date: '2024-09-01',
+    compatibility_date: '2025-01-01',
     bindings: [
       { type: 'durable_object_namespace', name: 'TUNNEL', class_name: 'Tunnel' },
       { type: 'plain_text', name: 'AGENT_SECRET', text: opts.agentSecret },
       { type: 'plain_text', name: 'PINS_JSON', text: JSON.stringify(opts.pins) }
-    ],
-    routes: [{ pattern: `${opts.zoneName}/*`, zone_name: opts.zoneName }]
+    ]
   }
-  const form = new FormData()
-  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }), 'metadata.json')
-  form.append('worker.js', new Blob([opts.workerCode], { type: 'application/javascript+module' }), 'worker.js')
-  await cfFetch(opts.token, `/accounts/${opts.accountId}/workers/scripts/${opts.scriptName}`, {
-    method: 'PUT',
-    body: form
+  const form = (meta: Record<string, unknown>): FormData => {
+    const f = new FormData()
+    f.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }), 'metadata.json')
+    f.append('worker.js', new Blob([opts.workerCode], { type: 'application/javascript+module' }), 'worker.js')
+    return f
+  }
+  const put = (body: FormData): Promise<unknown> =>
+    cfFetch(opts.token, `/accounts/${opts.accountId}/workers/scripts/${encodeURIComponent(opts.scriptName)}`, {
+      method: 'PUT',
+      body
+    })
+  try {
+    await put(form(base))
+  } catch (e) {
+    if (!(e instanceof CloudApiError) || !e.message.includes('10061')) throw e
+    await put(form({
+      ...base,
+      migrations: { new_tag: 'v1', new_sqlite_classes: ['Tunnel'] }
+    }))
+  }
+}
+
+/** 幂等创建 Workers 路由（pattern 如 example.com/* 或 app.example.com/*） */
+export async function ensureRoute(
+  token: string,
+  zoneId: string,
+  pattern: string,
+  scriptName: string
+): Promise<void> {
+  const routes = (await cfFetch(token, `/zones/${zoneId}/workers/routes?per_page=100`)) as Array<{
+    pattern: string
+    script: string
+  }>
+  const hit = (routes || []).find((r) => r.pattern === pattern)
+  if (hit) {
+    if (hit.script !== scriptName) {
+      throw new Error(`路由 ${pattern} 已绑定到其他 Worker（${hit.script}），请先在 Cloudflare 控制台解除`)
+    }
+    return
+  }
+  await cfFetch(token, `/zones/${zoneId}/workers/routes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pattern, script: scriptName })
   })
 }
 

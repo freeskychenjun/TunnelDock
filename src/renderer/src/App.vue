@@ -12,11 +12,21 @@ const tokenEdit = ref<{ id: string; name: string; value: string } | null>(null)
 const rmConfirm = ref<{ id: string; name: string; hostname: string } | null>(null)
 const purgeCloud = ref(true)
 const form = ref({ name: '', host: '127.0.0.1', port: '', pin: '' })
+const formTransport = ref<'cloudflared' | 'wss'>('cloudflared')
 const busy = ref(false)
 const toast = ref('')
 const appAutostart = ref(false)
 const hasCert = ref(false)
 const appInfo = ref<AppInfo | null>(null)
+
+// 反向隧道（RT）向导
+const rtModal = ref(false)
+const rtInfo = ref<RtStatus | null>(null)
+const rtTokenInput = ref('')
+const rtZones = ref<{ id: string; name: string }[]>([])
+const rtZoneId = ref('')
+const rtBusy = ref(false)
+const rtHint = ref('')
 
 function showToast(msg: string): void {
   toast.value = msg
@@ -40,6 +50,8 @@ onMounted(async () => {
   appInfo.value = await window.tunneldock.appInfo()
   appAutostart.value = await window.tunneldock.getAppAutostart()
   hasCert.value = await window.tunneldock.hasOriginCert()
+  rtInfo.value = await window.tunneldock.rtStatus()
+  if (rtInfo.value?.configured) formTransport.value = 'wss'
   window.tunneldock.onEvent((st) => {
     const m: Record<string, ServiceState> = {}
     for (const s of st) m[s.id] = s
@@ -64,7 +76,8 @@ async function createService(): Promise<void> {
       name: form.value.name.trim(),
       targetHost: form.value.host.trim(),
       targetPort: port,
-      pin: pin || undefined
+      pin: pin || undefined,
+      transport: formTransport.value === 'wss' ? 'wss' : undefined
     })
     showCreate.value = false
     form.value = { name: '', host: '127.0.0.1', port: '', pin: '' }
@@ -194,6 +207,59 @@ async function copy(text: string, what: string): Promise<void> {
   showToast(`${what}已复制`)
 }
 
+async function toggleTransport(svc: ServiceConfig): Promise<void> {
+  const next = svc.transport === 'wss' ? 'cloudflared' : 'wss'
+  try {
+    await window.tunneldock.setTransport(svc.id, next)
+    showToast(next === 'wss' ? `已切到反向隧道模式（${next === 'wss' ? '部署后子域名生效' : ''}），重新启动生效` : '已切回 cloudflared 模式，重新启动生效')
+    await refresh()
+  } catch (e) {
+    showToast((e as Error).message)
+  }
+}
+
+// ---- 反向隧道向导 ----
+async function rtVerify(): Promise<void> {
+  rtBusy.value = true
+  rtHint.value = '正在验证 Token 并读取域名…'
+  try {
+    const r = await window.tunneldock.rtSetup(rtTokenInput.value.trim())
+    rtZones.value = r.zones
+    rtZoneId.value = r.zones[0]?.id || ''
+    rtHint.value = `Token 有效，找到 ${r.zones.length} 个域名，选择后点「部署」`
+  } catch (e) {
+    rtHint.value = (e as Error).message
+  } finally {
+    rtBusy.value = false
+  }
+}
+
+async function rtDoDeploy(): Promise<void> {
+  if (!rtZoneId.value) {
+    rtHint.value = '先选择一个域名'
+    return
+  }
+  rtBusy.value = true
+  rtHint.value = '正在部署（DNS + Worker + 路由，约 10-30 秒）…'
+  try {
+    rtInfo.value = await window.tunneldock.rtDeploy(rtTokenInput.value.trim(), rtZoneId.value)
+    formTransport.value = 'wss'
+    rtHint.value = '部署完成！新建发布默认走反向隧道；已有服务在卡片上点「反向隧道」切换'
+    await refresh()
+  } catch (e) {
+    rtHint.value = `部署失败：${(e as Error).message}`
+  } finally {
+    rtBusy.value = false
+  }
+}
+
+async function rtDoForget(): Promise<void> {
+  rtInfo.value = await window.tunneldock.rtForget()
+  rtZones.value = []
+  rtTokenInput.value = ''
+  rtHint.value = '已解绑（云端资源保留，重新配置可无缝接管）'
+}
+
 const STATUS_TEXT: Record<string, string> = {
   idle: '未启动',
   starting: '发布中…',
@@ -218,6 +284,9 @@ const STATUS_TEXT: Record<string, string> = {
           开机自启并恢复发布
         </label>
         <span class="hint">每个发布独立 PIN 保护 · 断线自动重连</span>
+        <button class="mini ghost" :class="{ on: rtInfo?.configured }" title="ISP 封锁 cloudflared 时用 Worker 反向隧道（走 443）" @click="rtModal = true">
+          {{ rtInfo?.configured ? `反向隧道✓ ${rtInfo.zoneName}` : '反向隧道' }}
+        </button>
         <button class="primary" @click="showCreate = true">＋ 新建发布</button>
       </div>
 
@@ -255,6 +324,9 @@ const STATUS_TEXT: Record<string, string> = {
             {{ svc.tokenFile ? '令牌✓' : '令牌引导' }}
           </button>
           <span v-if="svc.hostname" class="hosttag">🔒 {{ svc.hostname }}</span>
+          <button class="mini ghost" :class="{ on: svc.transport === 'wss' }" :title="svc.transport === 'wss' ? '反向隧道模式（wss 443 直连，不受 7844 封锁影响）' : '点击切换为反向隧道模式（需先配置「反向隧道」）'" @click="toggleTransport(svc)">
+            {{ svc.transport === 'wss' ? 'RT✓' : '切RT' }}
+          </button>
           <span class="spacer" />
           <label class="switcher small" title="TunnelDock 启动时自动恢复此发布">
             <input type="checkbox" :checked="svc.autoStart" @change="toggleAutoStart(svc)" /> 自启
@@ -279,6 +351,11 @@ const STATUS_TEXT: Record<string, string> = {
         <input v-model="form.port" placeholder="如 5173" inputmode="numeric" />
         <label>访问口令（留空 = 自动生成 8 位 PIN）</label>
         <input v-model="form.pin" placeholder="至少 6 位" />
+        <label>传输模式</label>
+        <select v-model="formTransport">
+          <option value="cloudflared">cloudflared（默认，网络未封锁时用）</option>
+          <option value="wss" :disabled="!rtInfo?.configured">反向隧道 wss（封锁网络用{{ rtInfo?.configured ? '' : '，需先配置「反向隧道」' }}）</option>
+        </select>
         <div class="actions">
           <button class="mini" @click="showCreate = false">取消</button>
           <button class="primary" :disabled="busy" @click="createService">创建</button>
@@ -356,6 +433,43 @@ const STATUS_TEXT: Record<string, string> = {
           <button class="mini" @click="rmConfirm = null">取消</button>
           <button class="mini danger" @click="doRemove(rmConfirm.id, purgeCloud)">删除</button>
         </div>
+      </div>
+    </div>
+
+    <!-- 反向隧道（RT）向导 -->
+    <div v-if="rtModal" class="mask" @click.self="rtModal = false">
+      <div class="modal" style="width: 430px">
+        <h3>反向隧道（wss 443 直连）</h3>
+        <template v-if="!rtInfo?.configured">
+          <p class="hintbox">
+            适用于 ISP 封锁 cloudflared（7844 端口）的网络：本机 agent 走 443 反向连接 Cloudflare Worker，手机照常访问。<br />
+            需要：① Cloudflare 账号（免费）② 名下一个域名 ③ API Token（权限：Zone·DNS·Edit、Zone·Workers Routes·Edit、Account·Workers Scripts·Edit）。
+          </p>
+          <label>API Token（粘贴后点「验证」）</label>
+          <input v-model="rtTokenInput" placeholder="在 dash.cloudflare.com/profile/api-tokens 创建" />
+          <div v-if="rtZones.length > 0" style="margin-top: 12px">
+            <label>选择域名（子域名会自动分配为 服务ID.域名）</label>
+            <select v-model="rtZoneId" style="width: 100%">
+              <option v-for="z in rtZones" :key="z.id" :value="z.id">{{ z.name }}</option>
+            </select>
+          </div>
+          <p v-if="rtHint" class="hintbox">{{ rtHint }}</p>
+          <div class="actions">
+            <button class="mini" @click="rtModal = false">取消</button>
+            <button class="mini" :disabled="rtBusy || !rtTokenInput.trim()" @click="rtVerify">验证</button>
+            <button class="primary" :disabled="rtBusy || !rtZoneId" @click="rtDoDeploy">部署</button>
+          </div>
+        </template>
+        <template v-else>
+          <p class="hintbox">
+            已配置 ✓ 域名：<b>{{ rtInfo?.zoneName }}</b> · Worker：{{ rtInfo?.scriptName }} · 当前 {{ rtInfo?.serviceCount }} 个服务走反向隧道。<br />
+            服务增删、改口令会自动同步到云端；agent 断线自动重连。
+          </p>
+          <div class="actions">
+            <button class="mini danger" @click="rtDoForget">解绑本机</button>
+            <button class="primary" @click="rtModal = false">完成</button>
+          </div>
+        </template>
       </div>
     </div>
 

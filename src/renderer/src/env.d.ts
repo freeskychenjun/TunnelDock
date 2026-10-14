@@ -5,13 +5,14 @@ declare global {
   type ServiceState = import('../../shared/types').ServiceState
   type AppInfo = import('../../shared/types').AppInfo
   type RemoveResult = import('../../shared/types').RemoveResult
+  type RtStatus = import('../../shared/types').RtStatus
 
   interface Window {
     tunneldock: {
       appInfo: () => Promise<AppInfo>
       list: () => Promise<ServiceConfig[]>
       states: () => Promise<ServiceState[]>
-      create: (p: { name: string; targetHost: string; targetPort: number; pin?: string }) => Promise<ServiceConfig>
+      create: (p: { name: string; targetHost: string; targetPort: number; pin?: string; transport?: string }) => Promise<ServiceConfig>
       start: (id: string) => Promise<ServiceState>
       stop: (id: string) => Promise<ServiceState>
       remove: (id: string, purgeCloud?: boolean) => Promise<RemoveResult>
@@ -20,7 +21,12 @@ declare global {
       setAutoStart: (id: string, on: boolean) => Promise<ServiceConfig>
       setHostname: (id: string, hostname: string) => Promise<ServiceConfig>
       setTokenFile: (id: string, file: string) => Promise<ServiceConfig>
+      setTransport: (id: string, transport: 'cloudflared' | 'wss') => Promise<ServiceConfig>
       hasOriginCert: () => Promise<boolean>
+      rtStatus: () => Promise<RtStatus>
+      rtSetup: (token: string) => Promise<{ zones: { id: string; name: string }[] }>
+      rtDeploy: (token: string, zoneId: string) => Promise<RtStatus>
+      rtForget: () => Promise<RtStatus>
       getAppAutostart: () => Promise<boolean>
       setAppAutostart: (on: boolean) => Promise<boolean>
       onEvent: (cb: (states: ServiceState[]) => void) => void

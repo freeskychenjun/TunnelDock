@@ -9,6 +9,7 @@ export interface ServiceConfig {
   pin: string
   hostname: string // 留空 = 免费临时地址（Quick Tunnel）；填域名 = 命名隧道固定地址
   tokenFile: string // 服务自带令牌的来源文件（如 dsh web 的 pm2 日志）；留空 = 不启用引导
+  transport?: 'cloudflared' | 'wss' // 传输层：cloudflared 默认；wss = RT 反向隧道（7844 被封的网络）
   autoStart: boolean
   createdAt: number
 }
@@ -32,4 +33,12 @@ export interface RemoveResult {
   removed: boolean
   cloudPurged: boolean // 是否连同删除了 Cloudflare 侧隧道
   cloudError?: string // 云端删除失败时的原因（本地删除不受影响）
+}
+
+/** 反向隧道（RT）账号状态——不含 token 明文 */
+export interface RtStatus {
+  configured: boolean
+  zoneName?: string
+  scriptName?: string
+  serviceCount: number // 当前走 wss 传输的服务数
 }

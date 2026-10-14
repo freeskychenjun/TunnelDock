@@ -292,6 +292,11 @@ export class Tunnel {
     } catch (e) {
       return;
     }
+    // ── 连接健康检查: 回 ack（agent 据此识别"下行通上行丢"的半瘫边缘并换节点）──
+    if (frame.type === "hello") {
+      try { ws.send(JSON.stringify({ type: "hello-ack", proto: 1 })); } catch (e) {}
+      return;
+    }
     // ── 浏览器 WS 中转: Agent → 浏览器方向 ──
     if (frame.type === "ws-data") {
       const sock = this.wsConns.get(frame.id);

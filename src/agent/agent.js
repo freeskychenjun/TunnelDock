@@ -244,6 +244,8 @@ function handleWsFrame(ws, frame) {
 }
 
 // ── 主连接（wss 直连 443；连接打开后挂起至关闭，等价 python 的 async with）──
+// 打开后必须先过 hello/hello-ack 全双工体检（3s 内 DO 回不了 ack = 半瘫边缘，
+// 只会下行通上行丢，浏览器 WS 中转也会楔死）→ 立刻断开换下一个候选
 function connectOnceWrapped(edgeIp) {
   return new Promise((resolve, reject) => {
     const url = `wss://${hostname}/__agent?secret=${encodeURIComponent(agentSecret)}`
@@ -260,13 +262,34 @@ function connectOnceWrapped(edgeIp) {
     }
     const ws = new WebSocket(url, opts)
     let opened = false
+    let acked = false
+    let ackTimer = null
     ws.on('open', () => {
       opened = true
-      parentPort.postMessage({ type: 'ready' })
-      wsConns.clear()
-      log(`已连接 (https://${hostname}${edgeIp ? ' via ' + edgeIp : ''})`)
+      try { ws.send(JSON.stringify({ type: 'hello' })) } catch { /* close 会兜住 */ }
+      ackTimer = setTimeout(() => {
+        if (!acked) {
+          log(`边缘${edgeIp || '(默认解析)'} 上行不通（hello 无 ack），换节点`, 'warn')
+          try { ws.terminate() } catch { /* 已关 */ }
+        }
+      }, 3000)
     })
     ws.on('message', (raw) => {
+      if (!acked) {
+        try {
+          const probe = JSON.parse(raw.toString('utf8'))
+          if (probe.type === 'hello-ack') {
+            acked = true
+            if (ackTimer) clearTimeout(ackTimer)
+            wsConns.clear()
+            parentPort.postMessage({ type: 'ready' })
+            log(`已连接 (https://${hostname}${edgeIp ? ' via ' + edgeIp : ''})`)
+            return
+          }
+        } catch {
+          /* 非 JSON：交给业务逻辑 */
+        }
+      }
       let frame
       try {
         frame = JSON.parse(raw.toString('utf8'))
@@ -279,16 +302,17 @@ function connectOnceWrapped(edgeIp) {
       }
     })
     ws.on('error', (e) => {
-      if (!opened) reject(e)
+      if (!acked) reject(e)
     })
     ws.on('close', () => {
+      if (ackTimer) clearTimeout(ackTimer)
       parentPort.postMessage({ type: 'offline' })
       for (const [, conn] of wsConns) {
         try { if (conn.ws) conn.ws.close() } catch { /* 已关 */ }
       }
       wsConns.clear()
-      if (opened) resolve()
-      else reject(new Error('连接未建立即关闭'))
+      if (acked) resolve()
+      else reject(new Error(opened ? '边缘半瘫（上行不通）或连接未建立即关闭' : '连接未建立即关闭'))
     })
   })
 }
