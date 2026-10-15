@@ -2,7 +2,7 @@ import { app, BrowserWindow, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { TRAY_ICON_B64 } from './icon'
 import { registry } from './registry'
-import { initRtAccount } from './rt'
+import { initRtAccount, getRtAccount, syncPins } from './rt'
 import { registerIpc, publishDemo, autoRestore, shutdownAll, startHealthWatchdog } from './ipc'
 import { sweepOrphanTunnels } from './tunnel'
 
@@ -100,6 +100,11 @@ if (!app.requestSingleInstanceLock()) {
   void app.whenReady().then(() => {
     registry.init()
     initRtAccount()
+    // RT 已配置时启动即同步一次 Worker（幂等）：保证云端 Worker 代码随应用版本升级，
+    // 不再依赖用户在 GUI 里改配置才触发重部署
+    if (getRtAccount()) {
+      void syncPins().catch((e) => console.error(`[rt] 启动同步 Worker 失败: ${(e as Error).message}`))
+    }
     registerIpc()
     sweepOrphanTunnels() // 上次异常退出留下的 cloudflared 孤儿（带我们 ingress 配置的）
     createWindow()

@@ -173,9 +173,15 @@ export async function syncPins(): Promise<void> {
   const dnsToken = rtDnsToken()
   if (!acc || !token) return
   const pins = buildPins()
-  // 新 hostname 补 DNS
+  // 新 hostname 补 DNS（尽力而为，失败不阻塞：同名记录可能以别的类型存在——如
+  // cloudflared 时代的 CNAME——只要它仍指向 CF 代理，zone 级路由照常工作；
+  // 重部署 Worker（含新 PINS/新代码）才是本函数的关键路径）
   for (const hostname of Object.keys(pins)) {
-    await upsertSubdomain(dnsToken || token, acc.zoneId, hostname)
+    try {
+      await upsertSubdomain(dnsToken || token, acc.zoneId, hostname)
+    } catch {
+      /* 保留现状 */
+    }
   }
   await deployWorker({
     token, accountId: acc.accountId, scriptName: SCRIPT_NAME,

@@ -96,6 +96,18 @@ export class Tunnel {
     this.wsConns = new Map(); // 浏览器 WS 中转: connId -> 浏览器侧 socket
   }
 
+  /** 当前用于路由的 agent 连接：取"最新的"一条 ready 连接。
+   *  agent 断线重连后，旧 socket 可能半开僵死（readyState=1 实则丢包；close() 对
+   *  僵尸是空操作也不会自行消失）——按插入序取第一条会把流量永久路由给僵尸，
+   *  表现为"隧道请求超时/应用永久连接中"。取最后一条（最新 accept 的），
+   *  重连后的新连接立即接管流量。 */
+  latestAgent(exclude) {
+    const list = this.state.getWebSockets("agent").filter(
+      (ws) => ws.readyState === 1 && !(exclude && exclude.has(ws))
+    );
+    return list.length > 0 ? list[list.length - 1] : null;
+  }
+
   async expectedToken(pin) {
     const data = enc.encode("td-rt:" + this.env.AGENT_SECRET + ":" + pin);
     const digest = await crypto.subtle.digest("SHA-256", data);
@@ -154,7 +166,7 @@ export class Tunnel {
     // ── 2.5. 浏览器 WebSocket 中转（侧边栏/终端等实时通道）──
     const isUpgrade = (request.headers.get("Upgrade") || "").toLowerCase() === "websocket";
     if (isUpgrade && path !== "/__agent") {
-      const agent = this.state.getWebSockets("agent").find((ws) => ws.readyState === 1);
+      const agent = this.latestAgent();
       if (!agent) {
         return new Response(serviceName + " 隧道离线：桌面端未连接", {
           status: 502, headers: { "content-type": "text/plain; charset=utf-8" },
@@ -171,23 +183,27 @@ export class Tunnel {
       const connId = crypto.randomUUID();
       this.wsConns.set(connId, serverSide);
 
+      const wsOpenFrame = JSON.stringify({
+        type: "ws-open", id: connId, path: cleanPath,
+        headers: {
+          cookie: request.headers.get("Cookie") || "",
+          "sec-websocket-protocol": request.headers.get("Sec-WebSocket-Protocol") || "",
+        },
+      });
       try {
-        agent.send(JSON.stringify({
-          type: "ws-open", id: connId, path: cleanPath,
-          headers: {
-            cookie: request.headers.get("Cookie") || "",
-            "sec-websocket-protocol": request.headers.get("Sec-WebSocket-Protocol") || "",
-          },
-        }));
+        agent.send(wsOpenFrame);
       } catch (e) {
         this.wsConns.delete(connId);
         try { serverSide.close(1011, "agent link error"); } catch (e2) {}
         return new Response(null, { status: 101, webSocket: clientSide });
       }
+      // （不做定时重发：agent 断链时浏览器侧会被关闭，客户端自带重连与退避，
+      //   重连请求会以新 ws-open 在新 agent 上重建；定时重发只会产生孤儿拨号）
 
       serverSide.addEventListener("message", (ev) => {
         try {
-          agent.send(JSON.stringify({
+          const sock = this.latestAgent();
+          if (sock) sock.send(JSON.stringify({
             type: "ws-data", id: connId,
             data: typeof ev.data === "string" ? ev.data : bufferToB64(ev.data),
             bin: typeof ev.data !== "string",
@@ -196,7 +212,10 @@ export class Tunnel {
       });
       const teardown = () => {
         this.wsConns.delete(connId);
-        try { agent.send(JSON.stringify({ type: "ws-close", id: connId })); } catch (e) {}
+        try {
+          const sock = this.latestAgent();
+          if (sock) sock.send(JSON.stringify({ type: "ws-close", id: connId }));
+        } catch (e) {}
       };
       serverSide.addEventListener("close", teardown);
       serverSide.addEventListener("error", teardown);
@@ -205,7 +224,7 @@ export class Tunnel {
     }
 
     // ── 3. 普通 HTTP 请求 → 经 WebSocket 隧道转发 ──
-    const agent = this.state.getWebSockets("agent").find((ws) => ws.readyState === 1);
+    const agent = this.latestAgent();
     if (!agent) {
       return new Response(serviceName + " 隧道离线：桌面端未连接", {
         status: 502,
@@ -238,14 +257,32 @@ export class Tunnel {
       }, 20000);
     });
 
-    agent.send(JSON.stringify({
+    const reqFrame = JSON.stringify({
       type: "req",
       id: reqId,
       method: request.method,
       path: path + url.search,
       headers,
       body: bufferToB64(bodyBuf),
-    }));
+    });
+    const tried = new Set([agent]);
+    const sendReq = (sock) => { try { sock.send(reqFrame); } catch (e) {} };
+    sendReq(agent);
+    // 僵尸 socket 自愈：agent 连接可能半开僵死（对端看着 readyState=1 实则丢包，
+    // 桌面端心跳 ~16s 内会换新连接）——8s/14s 仍未收到 res-start 时，把请求
+    // 重发给“没试过的”存活 socket（同 id 幂等，新 agent 收到即正常应答）。
+    // 纯 DO 内部逻辑，老版本 agent 完全兼容。
+    for (const delayMs of [8000, 14000]) {
+      setTimeout(() => {
+        const p = this.pending.get(reqId);
+        if (!p || p.started) return;
+        const alt = this.latestAgent(tried);
+        if (alt) {
+          tried.add(alt);
+          sendReq(alt);
+        }
+      }, delayMs);
+    }
 
     let start;
     try {
@@ -320,11 +357,18 @@ export class Tunnel {
       p.started = true;
       p.resolve({ status: frame.status, headers: frame.headers });
     } else if (frame.type === "chunk") {
+      // 续传帧随时可能来自新的 agent 连接：每收到数据就续命 stall 兜底
+      if (p.stallTimer) {
+        clearTimeout(p.stallTimer);
+        p.stallTimer = setTimeout(() => this.stallClose(frame.id, p), 120000);
+      }
       try { await p.writer.write(b64ToBuf(frame.data)); } catch (e) {}
     } else if (frame.type === "end") {
+      if (p.stallTimer) clearTimeout(p.stallTimer);
       try { await p.writer.close(); } catch (e) {}
       this.pending.delete(frame.id);
     } else if (frame.type === "error") {
+      if (p.stallTimer) clearTimeout(p.stallTimer);
       if (!p.started) {
         p.reject(new Error(frame.message || "agent error"));
       } else {
@@ -334,16 +378,33 @@ export class Tunnel {
     }
   }
 
+  /** 已开始的流长时间无任何帧时的防泄漏兜底（同样中止而非静默关闭） */
+  stallClose(reqId, p) {
+    if (this.pending.get(reqId) === p) {
+      this.pending.delete(reqId);
+      try { p.writer.abort(new Error("stream stalled")); } catch (e) {}
+    }
+  }
+
   async webSocketClose(ws, code, reason, wasClean) {
-    // agent 链路断开 → 所有浏览器 WS 一并关闭（客户端会自动重连新链路）
+    // agent 链路断开 → 在途流全部**中止**：断链瞬间滞留在网络中的字节已丢失，
+    // 无损续传无法保证——续传会产出"带洞但看起来完整"的响应（比失败更糟：
+    // 浏览器会执行损坏的 JS）。中止让客户端得到明确失败并重试，
+    // agent 侧同步中止对应请求（两端一致，绝不静默截断）。
+    // 未开始的流保留条目，交给 8s/14s 重发窗口（新 agent 会独立完成它）。
+    for (const [reqId, p] of this.pending) {
+      if (p.started) {
+        this.pending.delete(reqId);
+        if (p.stallTimer) clearTimeout(p.stallTimer);
+        try { await p.writer.abort(new Error("agent link lost mid-stream")); } catch (e) {}
+      }
+    }
+    // 浏览器 WS 中转：agent 侧断链，浏览器侧一并关闭（客户端自带重连，
+    // 重连时发出新的 ws-open 在新 agent 上重建本地链路）
     for (const [, sock] of this.wsConns) {
       try { sock.close(1011, "agent link closed"); } catch (e) {}
     }
     this.wsConns.clear();
-    for (const [, p] of this.pending) {
-      if (!p.started) p.reject(new Error("agent link closed"));
-    }
-    this.pending.clear();
   }
   async webSocketError(ws, error) {}
 
