@@ -3,7 +3,7 @@ import { join } from 'path'
 import { TRAY_ICON_B64 } from './icon'
 import { registry } from './registry'
 import { initRtAccount } from './rt'
-import { registerIpc, publishDemo, autoRestore, shutdownAll } from './ipc'
+import { registerIpc, publishDemo, autoRestore, shutdownAll, startHealthWatchdog } from './ipc'
 import { sweepOrphanTunnels } from './tunnel'
 
 // M2：断线重连、自启恢复、--hidden 静默启动、渲染进程崩溃自愈
@@ -114,6 +114,7 @@ if (!app.requestSingleInstanceLock()) {
       void publishDemo(port, customPin)
     } else {
       autoRestore() // 正常启动：恢复所有 autoStart 的发布（E2E 模式跳过，走 publishDemo）
+      startHealthWatchdog() // 数据面健康看门狗：连接半开僵死（进程活着隧道已死）时探活判死自动重建
     }
   })
 }

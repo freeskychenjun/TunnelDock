@@ -8,6 +8,7 @@ import { startGateway, stopGateway, GatewayHandle } from './gateway'
 import { startTunnel, startNamedTunnel, probeReady, stopTunnel, hasOriginCert, deleteNamedTunnel, tunnelsDir } from './tunnel'
 import { startAgent, stopAgent, AgentHandle } from './agentProc'
 import { initRtAccount, getRtAccount, rtToken, rtSetup, rtDeploy, rtForget, syncPins, rtStatus, EDGE_IPS } from './rt'
+import { startHealthWatchdog as runHealthWatchdog } from './health'
 import type { ServiceState } from '../shared/types'
 import type { ChildProcess } from 'child_process'
 
@@ -284,12 +285,39 @@ function stopService(id: string): ServiceState {
 
 /** 应用退出时统一回收（will-quit 调用）：停全部隧道与网关，不留孤儿进程 */
 export function shutdownAll(): void {
+  healthWatchdog?.stop()
+  healthWatchdog = null
   for (const r of runtimes.values()) {
     r.desired = 'stopped'
     clearReconnect(r)
     teardown(r)
   }
 }
+
+/** 启动数据面健康看门狗：进程信号之外的第二道防线——连接半开僵死时进程都活着，
+ *  任何退出/offline 信号都不来；看门狗从公网地址探活判死，走既有重连链路重建。
+ *  在 whenReady 里随 autoRestore 一起调，一次即可。 */
+export function startHealthWatchdog(): void {
+  if (healthWatchdog) return
+  healthWatchdog = runHealthWatchdog({
+    edgeIps: EDGE_IPS,
+    targets: () =>
+      [...runtimes.entries()].flatMap(([id, r]) =>
+        r.desired === 'running' && r.status.status === 'ready' && r.status.url
+          ? [{ id, name: registry.get(id)?.name ?? id, url: r.status.url }]
+          : []
+      ),
+    onDown: (t) => {
+      // 探测间隙里用户可能已手动停止或已在重连，动手前双检
+      const r = rt(t.id)
+      if (r.desired !== 'running' || r.status.status !== 'ready') return
+      notify('TunnelDock 健康自检发现断线', `${t.name} 隧道无响应，正在自动重建`)
+      scheduleReconnect(t.id, '健康自检：公网地址连续探活失败')
+    }
+  })
+}
+
+let healthWatchdog: { stop(): void } | null = null
 
 /** 应用启动时恢复所有 autoStart 的发布（错峰启动，避免同时抢隧道） */
 export function autoRestore(): void {

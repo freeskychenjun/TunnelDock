@@ -246,6 +246,10 @@ function handleWsFrame(ws, frame) {
 // ── 主连接（wss 直连 443；连接打开后挂起至关闭，等价 python 的 async with）──
 // 打开后必须先过 hello/hello-ack 全双工体检（3s 内 DO 回不了 ack = 半瘫边缘，
 // 只会下行通上行丢，浏览器 WS 中转也会楔死）→ 立刻断开换下一个候选
+//
+// 心跳：建连后每 60s 重发一次 hello（DO 对任何时刻的 hello 都回 ack——老版本
+// Worker 也认，无版本耦合）。半开连接（本机以为连着、中段/对端早已不在）不会触发
+// close 事件，2026-10 的封锁事件实测会这样僵死；10s 内无 ack 即判死重建。
 function connectOnceWrapped(edgeIp) {
   return new Promise((resolve, reject) => {
     const url = `wss://${hostname}/__agent?secret=${encodeURIComponent(agentSecret)}`
@@ -264,6 +268,23 @@ function connectOnceWrapped(edgeIp) {
     let opened = false
     let acked = false
     let ackTimer = null
+    let hbTimer = null
+    let hbWait = null
+    const stopHeartbeat = () => {
+      if (hbTimer) clearInterval(hbTimer)
+      if (hbWait) clearTimeout(hbWait)
+      hbTimer = null
+      hbWait = null
+    }
+    const beat = () => {
+      if (hbWait) return // 上一拍还没回 ack，等它的 deadline 判死
+      hbWait = setTimeout(() => {
+        hbWait = null
+        log('心跳 10s 无 ack，判定连接僵死，重建', 'warn')
+        try { ws.terminate() } catch { /* close 兜住 */ }
+      }, 10000)
+      try { ws.send(JSON.stringify({ type: 'hello' })) } catch { /* close 兜住 */ }
+    }
     ws.on('open', () => {
       opened = true
       try { ws.send(JSON.stringify({ type: 'hello' })) } catch { /* close 会兜住 */ }
@@ -275,25 +296,25 @@ function connectOnceWrapped(edgeIp) {
       }, 3000)
     })
     ws.on('message', (raw) => {
-      if (!acked) {
-        try {
-          const probe = JSON.parse(raw.toString('utf8'))
-          if (probe.type === 'hello-ack') {
-            acked = true
-            if (ackTimer) clearTimeout(ackTimer)
-            wsConns.clear()
-            parentPort.postMessage({ type: 'ready' })
-            log(`已连接 (https://${hostname}${edgeIp ? ' via ' + edgeIp : ''})`)
-            return
-          }
-        } catch {
-          /* 非 JSON：交给业务逻辑 */
-        }
-      }
       let frame
       try {
         frame = JSON.parse(raw.toString('utf8'))
       } catch {
+        return
+      }
+      if (frame.type === 'hello-ack') {
+        if (hbWait) {
+          clearTimeout(hbWait)
+          hbWait = null
+        }
+        if (!acked) {
+          acked = true
+          if (ackTimer) clearTimeout(ackTimer)
+          wsConns.clear()
+          parentPort.postMessage({ type: 'ready' })
+          log(`已连接 (https://${hostname}${edgeIp ? ' via ' + edgeIp : ''})`)
+          hbTimer = setInterval(beat, 60000)
+        }
         return
       }
       if (frame.type === 'req') handleRequest(ws, frame)
@@ -306,6 +327,7 @@ function connectOnceWrapped(edgeIp) {
     })
     ws.on('close', () => {
       if (ackTimer) clearTimeout(ackTimer)
+      stopHeartbeat()
       parentPort.postMessage({ type: 'offline' })
       for (const [, conn] of wsConns) {
         try { if (conn.ws) conn.ws.close() } catch { /* 已关 */ }
